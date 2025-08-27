@@ -5,11 +5,11 @@ FROM node:18-alpine
 WORKDIR /app
 
 # Copia os arquivos de configuração e lockfile
-# Isso garante que o npm ci tenha o package-lock.json para uma instalação determinística
+# Isso garante que o npm tenha o lockfile para uma instalação determinística
 COPY package.json package-lock.json ./
 
-# Instala as dependências de produção com o comando npm ci
-RUN npm ci --only=production
+# Instala as dependências de produção
+RUN npm install --omit=dev
 
 # Copia o restante dos arquivos da aplicação
 COPY . .
