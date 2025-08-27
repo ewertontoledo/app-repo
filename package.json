@@ -1,0 +1,12 @@
+{
+  "name": "app-teste",
+  "version": "1.0.0",
+  "description": "App de teste para demonstração de build/push e deploy via Rancher Fleet",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
