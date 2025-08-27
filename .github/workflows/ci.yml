@@ -34,32 +34,30 @@ jobs:
             ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/${{ secrets.IMAGE_NAME }}:latest
             ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/${{ secrets.IMAGE_NAME }}:${{ github.sha }}
 
-      - name: Update Fleet repo manifests (replace placeholder and push)
+      - name: Update Fleet repo manifests
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
-          FLEET_BRANCH: ${{ secrets.FLEET_BRANCH || 'main' }}
+          FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
           IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/${{ secrets.IMAGE_NAME }}:${{ github.sha }}
         run: |
-          # Config git
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Prepare repo URL for cloning with PAT (assumes HTTPS URL)
           REPO_NO_PROTO=${FLEET_REPO#https://}
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
 
-          git clone --depth 1 --branch "${FLEET_BRANCH}" "${CLONE_URL}" fleet-repo
+          BRANCH="${FLEET_BRANCH:-main}"
+          git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
           cd fleet-repo || exit 1
 
-          # Replace the placeholder IMAGE_PLACEHOLDER com a imagem gerada
-          # (o arquivo alvo abaixo é k8s/deployment.yaml)
-          sed -i "s|IMAGE_PLACEHOLDER|${IMAGE}|g" k8s/deployment.yaml
+          # Atualiza somente o container app-teste
+          sed -i "/name: app-teste/{n;s|image: .*|image: ${IMAGE}|}" k8s/deployment.yaml
 
           if git diff --quiet --exit-code; then
             echo "No changes to commit"
           else
             git add k8s/deployment.yaml
             git commit -m "Atualiza imagem para ${IMAGE} [ci skip]"
-            git push origin "${FLEET_BRANCH}"
+            git push origin "${BRANCH}"
           fi
