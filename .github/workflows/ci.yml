@@ -31,15 +31,15 @@ jobs:
           context: .
           push: true
           tags: |
-            ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/${{ secrets.IMAGE_NAME }}:latest
-            ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/${{ secrets.IMAGE_NAME }}:${{ github.sha }}
+            ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/app-teste-2:latest
+            ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/app-teste-2:${{ github.sha }}
 
       - name: Update Fleet repo manifests
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
           FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
-          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/${{ secrets.IMAGE_NAME }}:${{ github.sha }}
+          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/app-teste-2:${{ github.sha }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
@@ -57,14 +57,12 @@ jobs:
           chmod +x yq && sudo mv yq /usr/local/bin/
 
           # Atualiza a imagem no Deployment app-teste-2
-          yq e -i '.spec.template.spec.containers[] |= (select(.name == "app-teste-2") .image = env(IMAGE))' k8s/deployment.yaml
+          yq e -i '.spec.template.spec.containers[] |= (select(.name == "app-teste-2") .image = env(IMAGE))' k8/deployment-app-teste-2.yaml
 
           if git diff --quiet --exit-code; then
             echo "No changes to commit"
           else
-            git add k8s/deployment.yaml
+            git add k8/deployment-app-teste-2.yaml
             git commit -m "Atualiza imagem para ${IMAGE} [ci skip]"
             git push origin "${BRANCH}"
-          fi 
-
-          
+          fi
