@@ -57,12 +57,16 @@ jobs:
           chmod +x yq && sudo mv yq /usr/local/bin/
 
           # Atualiza a imagem no Deployment app-teste-2
-          yq e -i '.spec.template.spec.containers[] |= (select(.name == "app-teste-2") .image = env(IMAGE))' k8/deployment-app-teste-2.yaml
+          yq e -i '.spec.template.spec.containers[] |= (select(.name == "app-teste-2") .image = env(IMAGE))' k8s/deployment-app-teste-2.yaml
+
+          # Caso queira atualizar também o Service futuramente, pode descomentar
+          # yq e -i '.spec.ports[] |= (select(.name == "http") .targetPort = 9000)' k8s/service-app-teste-2.yaml
 
           if git diff --quiet --exit-code; then
             echo "No changes to commit"
           else
-            git add k8/deployment-app-teste-2.yaml
+            git add k8s/deployment-app-teste-2.yaml
+            # git add k8s/service-app-teste-2.yaml  # descomentar se atualizar o service
             git commit -m "Atualiza imagem para ${IMAGE} [ci skip]"
             git push origin "${BRANCH}"
-          fi
+          fi 
