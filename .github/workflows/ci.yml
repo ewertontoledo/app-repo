@@ -70,5 +70,3 @@ jobs:
             git commit -m "Atualiza imagem para ${IMAGE} [ci skip]"
             git push origin "${BRANCH}"
           fi 
-
-          
