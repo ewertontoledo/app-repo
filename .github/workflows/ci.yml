@@ -65,5 +65,4 @@ jobs:
             git add k8s/deployment.yaml
             git commit -m "Atualiza imagem para ${IMAGE} [ci skip]"
             git push origin "${BRANCH}"
-          fi          
-          
+          fi 
