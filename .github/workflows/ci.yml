@@ -8,6 +8,8 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    env:
+      APP_NAME: "app-teste-3"  # <-- alterar manualmente para o app desejado
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,20 +28,17 @@ jobs:
           password: ${{ secrets.OCIR_AUTH_TOKEN }}
 
       - name: Build and push image
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/teste2:latest
-            ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/teste2:${{ github.sha }}
+        run: |
+          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
+          docker build -t "$IMAGE" "k8s/apps/$APP_NAME"
+          docker push "$IMAGE"
 
       - name: Update Fleet repo manifests
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
           FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
-          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/teste2:${{ github.sha }}
+          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
@@ -56,17 +55,13 @@ jobs:
           curl -sL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
           chmod +x yq && sudo mv yq /usr/local/bin/
 
-          # Atualiza a imagem no Deployment app-teste-2
-          yq e -i '.spec.template.spec.containers[] |= (select(.name == "app-teste-2") .image = env(IMAGE))' k8s/deployment-app-teste-2.yaml
-
-          # Caso queira atualizar também o Service futuramente, pode descomentar
-          # yq e -i '.spec.ports[] |= (select(.name == "http") .targetPort = 9000)' k8s/service-app-teste-2.yaml
+          # Atualiza a imagem no Deployment do app selecionado
+          yq e -i '.spec.template.spec.containers[] |= (select(.name == env(APP_NAME)) .image = env(IMAGE))' "k8s/apps/${APP_NAME}/deployment.yaml"
 
           if git diff --quiet --exit-code; then
             echo "No changes to commit"
           else
-            git add k8s/deployment-app-teste-2.yaml
-            # git add k8s/service-app-teste-2.yaml  # descomentar se atualizar o service
+            git add "k8s/apps/${APP_NAME}/deployment.yaml"
             git commit -m "Atualiza imagem para ${IMAGE} [ci skip]"
             git push origin "${BRANCH}"
-          fi 
+          fi
