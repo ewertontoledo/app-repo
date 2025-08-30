@@ -35,12 +35,11 @@ jobs:
         run: |
           IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
           echo "🔍 Verificando se a imagem já existe no registry..."
-
           if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
             echo "✅ Imagem $IMAGE já existe, pulando build"
           else
             echo "📦 Imagem não encontrada, buildando e pushando..."
-            docker build -t "$IMAGE" "k8s/apps/$APP_NAME"
+            docker build -t "$IMAGE" .  # <-- usa a raiz do app-repo
             docker push "$IMAGE"
           fi
 
@@ -68,13 +67,13 @@ jobs:
           chmod +x yq && sudo mv yq /usr/local/bin/
 
           # Atualiza a imagem no deployment do app selecionado
-          yq e -i '.spec.template.spec.containers[] |= (select(.name == env(APP_NAME)) .image = env(IMAGE))' "k8s/apps/${APP_NAME}/deployment.yaml"
+          yq e -i '.spec.template.spec.containers[0].image = env(IMAGE)' "k8s/deployment.yaml"
 
           # Commit e push apenas se houver alterações
           if git diff --quiet --exit-code; then
             echo "✅ Nenhuma alteração detectada no manifest"
           else
-            git add "k8s/apps/${APP_NAME}/deployment.yaml"
+            git add "k8s/deployment.yaml"
             git commit -m "Atualiza imagem para ${IMAGE} [ci skip]"
             git push origin "${BRANCH}"
             echo "✅ Manifest atualizado no Fleet repo"
