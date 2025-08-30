@@ -39,7 +39,7 @@ jobs:
             echo "✅ Imagem $IMAGE já existe, pulando build"
           else
             echo "📦 Imagem não encontrada, buildando e pushando..."
-            docker build -t "$IMAGE" .  # <-- usa a raiz do app-repo
+            docker build -t "$IMAGE" .  # raiz do app-repo
             docker push "$IMAGE"
           fi
 
@@ -67,13 +67,17 @@ jobs:
           chmod +x yq && sudo mv yq /usr/local/bin/
 
           # Atualiza a imagem no deployment do app selecionado
-          yq e -i '.spec.template.spec.containers[0].image = env(IMAGE)' "k8s/apps/${APP_NAME}/deployment.yaml"
+          MANIFEST="k8s/apps/${APP_NAME}/deployment.yaml"
+          yq e -i '.spec.template.spec.containers[0].image = env(IMAGE)' "$MANIFEST"
+
+          # (Opcional) Atualiza a porta do container
+          # yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = 9000' "$MANIFEST"
 
           # Commit e push apenas se houver alterações
           if git diff --quiet --exit-code; then
             echo "✅ Nenhuma alteração detectada no manifest"
           else
-            git add "k8s/deployment.yaml"
+            git add "$MANIFEST"
             git commit -m "Atualiza imagem para ${IMAGE} [ci skip]"
             git push origin "${BRANCH}"
             echo "✅ Manifest atualizado no Fleet repo"
