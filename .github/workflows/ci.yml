@@ -9,18 +9,20 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     env:
-      APP_NAME: "app-teste-3"  # nome do app
-      APP_PORT: "9100"          # porta do app
+      APP_NAME: "app-teste-3"  # <-- alterar manualmente para o app desejado
     steps:
+      # 1️⃣ Faz checkout do código do repositório onde está o workflow
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 2️⃣ Configura QEMU para multi-arch builds (Docker Buildx)
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
+      # 3️⃣ Login no OCIR para push das imagens
       - name: Login to OCIR
         uses: docker/login-action@v2
         with:
@@ -28,6 +30,7 @@ jobs:
           username: ${{ secrets.OCIR_USERNAME }}
           password: ${{ secrets.OCIR_AUTH_TOKEN }}
 
+      # 4️⃣ Build e push da imagem Docker apenas se não existir
       - name: Build and push image if not exists
         run: |
           IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
@@ -36,49 +39,40 @@ jobs:
             echo "✅ Imagem $IMAGE já existe, pulando build"
           else
             echo "📦 Imagem não encontrada, buildando e pushando..."
-            docker build -t "$IMAGE" .
+            docker build -t "$IMAGE" .  # raiz do app-repo
             docker push "$IMAGE"
-
+          fi
+      # 5️⃣ Atualiza o manifest do Fleet repo para usar a nova imagem
       - name: Update Fleet repo manifests
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
           FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
           IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
-          APP_PORT: ${{ env.APP_PORT }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
+          # Clona o repo do Fleet
           REPO_NO_PROTO=${FLEET_REPO#https://}
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
           BRANCH="${FLEET_BRANCH:-main}"
           git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
           cd fleet-repo || exit 1
-
+          # Instala yq para manipular YAML
           sudo apt-get update && sudo apt-get install -y jq
           curl -sL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
           chmod +x yq && sudo mv yq /usr/local/bin/
-
-          DEPLOY_MANIFEST="k8s/apps/${APP_NAME}/deployment.yaml"
-          SERVICE_MANIFEST="k8s/apps/${APP_NAME}/service.yaml"
-
-          # Atualiza Deployment (imagem e containerPort)
-          if [ -f "$DEPLOY_MANIFEST" ]; then
-            yq e -i '.spec.template.spec.containers[0].image = strenv("IMAGE")' "$DEPLOY_MANIFEST"
-            yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = (strenv("APP_PORT") | tonumber)' "$DEPLOY_MANIFEST"
-          fi
-
-          # Atualiza Service (targetPort) se existir
-          if [ -f "$SERVICE_MANIFEST" ]; then
-            yq e -i '.spec.ports[0].targetPort = (strenv("APP_PORT") | tonumber)' "$SERVICE_MANIFEST"
-          fi
-
+          # Atualiza a imagem no deployment do app selecionado
+          MANIFEST="k8s/apps/${APP_NAME}/deployment.yaml"
+          yq e -i '.spec.template.spec.containers[0].image = env(IMAGE)' "$MANIFEST"
+          # (Opcional) Atualiza a porta do container
+          # yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = 9100' "$MANIFEST"
           # Commit e push apenas se houver alterações
           if git diff --quiet --exit-code; then
-            echo "✅ Nenhuma alteração detectada nos manifests"
+            echo "✅ Nenhuma alteração detectada no manifest"
           else
-            git add "$DEPLOY_MANIFEST" "$SERVICE_MANIFEST" 2>/dev/null || true
-            git commit -m "Atualiza imagem e porta para ${IMAGE}:${APP_PORT} [ci skip]"
+            git add "$MANIFEST"
+            git commit -m "Atualiza imagem para ${IMAGE} [ci skip]"
             git push origin "${BRANCH}"
-            echo "✅ Manifests atualizados no Fleet repo"
+            echo "✅ Manifest atualizado no Fleet repo"
+          fi
