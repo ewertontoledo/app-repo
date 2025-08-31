@@ -63,10 +63,10 @@ jobs:
           MANIFEST="k8s/apps/${APP_NAME}/deployment.yaml"
           
           # Atualiza a imagem
-          yq e -i '.spec.template.spec.containers[0].image = env(IMAGE)' "$MANIFEST"
+          yq e -i '.spec.template.spec.containers[0].image = strenv("IMAGE")' "$MANIFEST"
           
           # Atualiza a porta do container
-          yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = env(APP_PORT) | tonumber' "$MANIFEST"
+          yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = (strenv("APP_PORT") | tonumber)' "$MANIFEST"
 
           if git diff --quiet --exit-code; then
             echo "✅ Nenhuma alteração detectada no manifest"
