@@ -38,7 +38,6 @@ jobs:
             echo "📦 Imagem não encontrada, buildando e pushando..."
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
-          fi
 
       - name: Update Fleet repo manifests
         env:
@@ -46,6 +45,7 @@ jobs:
           FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
           IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
+          APP_PORT: ${{ env.APP_PORT }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
@@ -60,19 +60,25 @@ jobs:
           curl -sL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
           chmod +x yq && sudo mv yq /usr/local/bin/
 
-          MANIFEST="k8s/apps/${APP_NAME}/deployment.yaml"
-          
-          # Atualiza a imagem
-          yq e -i '.spec.template.spec.containers[0].image = strenv("IMAGE")' "$MANIFEST"
-          
-          # Atualiza a porta do container
-          yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = (strenv("APP_PORT") | tonumber)' "$MANIFEST"
+          DEPLOY_MANIFEST="k8s/apps/${APP_NAME}/deployment.yaml"
+          SERVICE_MANIFEST="k8s/apps/${APP_NAME}/service.yaml"
 
+          # Atualiza Deployment (imagem e containerPort)
+          if [ -f "$DEPLOY_MANIFEST" ]; then
+            yq e -i '.spec.template.spec.containers[0].image = strenv("IMAGE")' "$DEPLOY_MANIFEST"
+            yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = (strenv("APP_PORT") | tonumber)' "$DEPLOY_MANIFEST"
+          fi
+
+          # Atualiza Service (targetPort) se existir
+          if [ -f "$SERVICE_MANIFEST" ]; then
+            yq e -i '.spec.ports[0].targetPort = (strenv("APP_PORT") | tonumber)' "$SERVICE_MANIFEST"
+          fi
+
+          # Commit e push apenas se houver alterações
           if git diff --quiet --exit-code; then
-            echo "✅ Nenhuma alteração detectada no manifest"
+            echo "✅ Nenhuma alteração detectada nos manifests"
           else
-            git add "$MANIFEST"
+            git add "$DEPLOY_MANIFEST" "$SERVICE_MANIFEST" 2>/dev/null || true
             git commit -m "Atualiza imagem e porta para ${IMAGE}:${APP_PORT} [ci skip]"
             git push origin "${BRANCH}"
-            echo "✅ Manifest atualizado no Fleet repo"
-          fi
+            echo "✅ Manifests atualizados no Fleet repo"
