@@ -1,7 +1,7 @@
 {
-  "name": "app-teste-4",
+  "name": "app-teste-3",
   "version": "1.0.0",
-  "description": "App-teste-4 de teste para build/push e deploy via Rancher Fleet",
+  "description": "App-teste-3 de teste para build/push e deploy via Rancher Fleet",
   "main": "app.js",
   "scripts": {
     "start": "node app.js"
@@ -10,4 +10,3 @@
     "express": "^4.18.2"
   }
 }
-
