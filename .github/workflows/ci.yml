@@ -32,10 +32,8 @@ jobs:
           username: ${{ secrets.OCIR_USERNAME }}
           password: ${{ secrets.OCIR_AUTH_TOKEN }}
 
-      # 4️⃣ Build and push image (se não existir)
+      # 4️⃣ Build and push image if not exists
       - name: Build and push image if not exists
-        env:
-          GITHUB_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           IMAGE="gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${GITHUB_SHA}"
@@ -45,17 +43,23 @@ jobs:
           else
             echo "📦 Imagem não encontrada. Buildando e pushando $IMAGE..."
             docker buildx build --platform linux/amd64,linux/arm64 -t "$IMAGE" --push .
-          fi
+        env:
+          APP_NAME: ${{ env.APP_NAME }}
+          GITHUB_SHA: ${{ github.sha }}
 
       # 5️⃣ Scan Trivy
       - name: Scan image with Trivy
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: "gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${GITHUB_SHA}"
-          format: json
-          output: trivy-reports/trivy-report.json
-          severity: HIGH,CRITICAL
-          exit-code: 0
+        run: |
+          set -euo pipefail
+          IMAGE="gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${GITHUB_SHA}"
+          mkdir -p "trivy-reports/${APP_NAME}"
+          curl -sfL https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.65.0_Linux-64bit.tar.gz -o trivy.tar.gz
+          tar zxvf trivy.tar.gz
+          sudo mv trivy /usr/local/bin/
+          trivy image --exit-code 0 --severity HIGH,CRITICAL --format json -o "trivy-reports/${APP_NAME}/trivy-report.json" "$IMAGE"
+        env:
+          APP_NAME: ${{ env.APP_NAME }}
+          GITHUB_SHA: ${{ github.sha }}
 
       - name: Zip Trivy reports
         run: zip -r trivy-reports.zip trivy-reports
@@ -64,9 +68,9 @@ jobs:
       - name: Fail if HIGH/CRITICAL vulnerabilities
         if: ${{ env.TRIVY_FAIL_ON == 'true' }}
         run: |
-          COUNT=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' trivy-reports/trivy-report.json)
+          COUNT=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' "trivy-reports/${APP_NAME}/trivy-report.json")
           echo "📄 Relatório completo de vulnerabilidades:"
-          jq '.' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade crítica"
+          jq '.' "trivy-reports/${APP_NAME}/trivy-report.json" || echo "✅ Nenhuma vulnerabilidade crítica"
           if [ "$COUNT" -gt 0 ]; then
             echo "❌ Encontradas $COUNT vulnerabilidades HIGH/CRITICAL"
             exit 1
@@ -90,13 +94,6 @@ jobs:
 
       # 8️⃣ Atualiza Fleet repo
       - name: Update Fleet repo manifests
-        env:
-          FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
-          FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
-          FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
-          IMAGE: "gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${GITHUB_SHA}"
-          APP_NAME: ${{ env.APP_NAME }}
-          APP_PORT: ${{ env.APP_PORT }}
         run: |
           set -euo pipefail
           git config --global user.name "github-actions[bot]"
@@ -133,3 +130,10 @@ jobs:
           else
             echo "⚠️ Arquivo $DEPLOYMENT_FILE não encontrado, pulando atualização"
           fi
+        env:
+          FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
+          FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
+          FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
+          APP_NAME: ${{ env.APP_NAME }}
+          APP_PORT: ${{ env.APP_PORT }}
+          IMAGE: "gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
