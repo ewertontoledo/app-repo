@@ -10,21 +10,18 @@ jobs:
     runs-on: ubuntu-latest
     env:
       APP_NAME: "app-teste-2"
-      APP_PORT: 9100   # <-- Adicione aqui a porta do container
+      APP_PORT: 9100
 
     steps:
-      # 1️⃣ Checkout do repositório
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2️⃣ Configura QEMU para multi-arch builds (Docker Buildx)
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
-      # 3️⃣ Login no OCIR
       - name: Login to OCIR
         uses: docker/login-action@v2
         with:
@@ -32,35 +29,34 @@ jobs:
           username: ${{ secrets.OCIR_USERNAME }}
           password: ${{ secrets.OCIR_AUTH_TOKEN }}
 
-      # 4️⃣ Build e push da imagem
       - name: Build and push image if not exists
         run: |
           IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
-          echo "🔍 Verificando se a imagem já existe no registry..."
+          echo "🔍 Verificando se a imagem já existe..."
           if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
-            echo "✅ Imagem $IMAGE já existe, pulando build"
+            echo "✅ Imagem $IMAGE já existe"
           else
-            echo "📦 Imagem não encontrada, buildando e pushando..."
+            echo "📦 Buildando e pushando $IMAGE..."
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
           fi
 
-      # 5️⃣ Escaneamento com Trivy
       - name: Scan image with Trivy
         run: |
           IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
-          echo "🔒 Escaneando imagem $IMAGE com Trivy..."
-
-          # Instala Trivy
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh
+          echo "🔒 Escaneando $IMAGE com Trivy..."
+          
+          # Instala Trivy no PATH
+          curl -sfL https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.65.0_Linux-64bit.tar.gz -o trivy.tar.gz
+          tar zxvf trivy.tar.gz
+          sudo mv trivy /usr/local/bin/
 
           mkdir -p trivy-reports
           trivy image --exit-code 1 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE" || true
 
-          echo "📄 Resumo das vulnerabilidades HIGH e CRITICAL:"
-          jq '.Results[].Vulnerabilities[]? | {VulnerabilityID, Severity, PkgName, InstalledVersion, FixedVersion}' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade crítica encontrada."
+          echo "📄 Vulnerabilidades HIGH/CRITICAL:"
+          jq '.Results[].Vulnerabilities[]? | {VulnerabilityID, Severity, PkgName, InstalledVersion, FixedVersion}' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade crítica"
 
-      # 6️⃣ Atualiza o manifest do Fleet repo
       - name: Update Fleet repo manifests
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
@@ -71,6 +67,7 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
           REPO_NO_PROTO=${FLEET_REPO#https://}
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
           BRANCH="${FLEET_BRANCH:-main}"
@@ -86,21 +83,19 @@ jobs:
           yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = env(PORT)' "$MANIFEST"
 
           if git diff --quiet --exit-code; then
-            echo "✅ Nenhuma alteração detectada no manifest"
+            echo "✅ Nenhuma alteração detectada"
           else
             git add "$MANIFEST"
             git commit -m "Atualiza imagem e porta para ${IMAGE}:${PORT} [ci skip]"
             git push origin "${BRANCH}"
-            echo "✅ Manifest atualizado no Fleet repo"
+            echo "✅ Manifest atualizado"
 
-      # 7️⃣ Upload do JSON do Trivy como artefato
       - name: Upload Trivy report
         uses: actions/upload-artifact@v4
         with:
           name: trivy-report
           path: trivy-reports/trivy-report.json
 
-      # 8️⃣ Exibir resumo do Trivy no log
       - name: Show Trivy JSON summary in log
         run: |
           echo "🔍 Vulnerabilidades HIGH/CRITICAL detectadas:"
