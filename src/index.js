@@ -1,16 +1,14 @@
-// src/index.js
 const express = require("express");
 const app = express();
 
-// Rota principal
 app.get("/", (req, res) => {
-  res.send("🧪 Teste do App-teste-4 rodando com sucesso!");
+  res.send("🚀 Hello World from Node.js + Docker + GitHub Actions!");
 });
 
-// Porta definida via variável de ambiente ou fallback para 9101
-const port = process.env.PORT || 9101;
+// Porta definida via variável de ambiente ou fallback para 9000
+const port = process.env.PORT || 9000;
 
 app.listen(port, "0.0.0.0", () => {
-  console.log(`✅ App-teste-4 rodando na porta ${port}`);
-  console.log(`➡️ Acesse pelo Nginx reverse proxy: http://stage-smart.surf.com.br/teste-4`);
-});
+  console.log(`✅ App running and listening on port ${port}`);
+  console.log(`➡️ Access it via Nginx reverse proxy: http://stage-smart.surf.com.br`);
+}); 
