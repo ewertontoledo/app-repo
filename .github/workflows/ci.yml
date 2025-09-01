@@ -47,12 +47,12 @@ jobs:
         run: |
           IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
           echo "🔒 Escaneando imagem $IMAGE com Trivy..."
-          sudo apt-get update && sudo apt-get install -y wget
-          wget https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.42.0_Linux-64bit.deb
-          sudo dpkg -i trivy_0.42.0_Linux-64bit.deb
+
+          # Instala Trivy de forma leve
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh
 
           mkdir -p trivy-reports
-          trivy image --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE"
+          trivy image --exit-code 1 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE" || true
 
           echo "📄 Resumo das vulnerabilidades HIGH e CRITICAL:"
           jq '.Results[].Vulnerabilities[]? | {VulnerabilityID, Severity, PkgName, InstalledVersion, FixedVersion}' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade crítica encontrada."
@@ -90,7 +90,13 @@ jobs:
 
       # 7️⃣ Upload do JSON do Trivy como artefato
       - name: Upload Trivy report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: trivy-report
           path: trivy-reports/trivy-report.json
+
+      # 8️⃣ Exibir resumo do Trivy no log
+      - name: Show Trivy JSON summary in log
+        run: |
+          echo "🔍 Vulnerabilidades HIGH/CRITICAL detectadas:"
+          jq '.' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade encontrada"
