@@ -53,8 +53,8 @@ jobs:
 
           mkdir -p trivy-reports
 
-          # Sempre gera JSON, não quebra o pipeline aqui
-          trivy image --exit-code 0 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE"
+          # Sempre gera JSON, não quebra a pipeline aqui
+          trivy image --exit-code 0 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE" || true
 
           echo "📄 Vulnerabilidades HIGH/CRITICAL:"
           jq '.Results[].Vulnerabilities[]? | {VulnerabilityID, Severity, PkgName, InstalledVersion, FixedVersion}' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade crítica"
@@ -96,4 +96,10 @@ jobs:
           yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = env(PORT)' "$MANIFEST"
 
           if git diff --quiet --exit-code; then
-            echo "✅ Ne
+            echo "✅ Nenhuma atualização necessária"
+          else
+            git add "$MANIFEST"
+            git commit -m "Update image for ${APP_NAME} to ${IMAGE}"
+            git push origin "${BRANCH}"
+            echo "🚀 Manifest atualizado no Fleet repo"
+          fi
