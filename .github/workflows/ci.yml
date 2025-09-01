@@ -9,7 +9,7 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     env:
-      APP_NAME: "app-teste-4"  # <-- alterar manualmente para o app desejado
+      APP_NAME: "app-teste-2"  # <-- alterar manualmente para o app desejado
     steps:
       # 1️⃣ Faz checkout do código do repositório onde está o workflow
       - name: Checkout
