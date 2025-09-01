@@ -12,7 +12,6 @@ jobs:
       APP_NAME: "app-teste-2"
       APP_PORT: 9100
       TRIVY_FAIL_ON: "true"
-      IMAGE_TAG: ${{ github.sha }}
 
     steps:
       # 1️⃣ Checkout repository
@@ -33,7 +32,7 @@ jobs:
           username: ${{ secrets.OCIR_USERNAME }}
           password: ${{ secrets.OCIR_AUTH_TOKEN }}
 
-      # 4️⃣ Build and push image if not exists
+      # 4️⃣ Build and push image (se não existir)
       - name: Build and push image if not exists
         env:
           GITHUB_SHA: ${{ github.sha }}
@@ -46,6 +45,7 @@ jobs:
           else
             echo "📦 Imagem não encontrada. Buildando e pushando $IMAGE..."
             docker buildx build --platform linux/amd64,linux/arm64 -t "$IMAGE" --push .
+          fi
 
       # 5️⃣ Scan Trivy
       - name: Scan image with Trivy
