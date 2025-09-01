@@ -40,6 +40,7 @@ jobs:
             echo "📦 Buildando e pushando $IMAGE..."
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
+          fi
 
       - name: Scan image with Trivy
         run: |
@@ -51,7 +52,7 @@ jobs:
           sudo mv trivy /usr/local/bin/
           mkdir -p trivy-reports
 
-          # Sempre gera JSON, não quebra a pipeline aqui
+          # Sempre gera JSON, não quebra a pipeline
           trivy image --exit-code 0 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE"
 
           echo "📄 Vulnerabilidades HIGH/CRITICAL:"
