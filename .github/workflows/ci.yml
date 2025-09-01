@@ -41,7 +41,7 @@ jobs:
           IMAGE: "gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ env.SHORT_SHA }}"
         run: |
           set -euo pipefail
-          echo "🔍 Verificando se a imagem $IMAGE já existe..."
+          echo "🔍 Verificando se a imagem \"$IMAGE\" já existe..."
           if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
             echo "✅ Imagem $IMAGE já existe"
           else
@@ -94,6 +94,7 @@ jobs:
         with:
           name: trivy-reports
           path: trivy-reports/
+
       - name: Upload Trivy reports ZIP
         if: always()
         uses: actions/upload-artifact@v4
@@ -132,7 +133,7 @@ jobs:
 
           MANIFEST="k8s/apps/${APP_NAME}/deployment.yaml"
 
-          # Atualiza o campo image com o nome completo da imagem
+          # Atualiza o campo image e porta
           yq e -i '.spec.template.spec.containers[0].image = strenv(IMAGE)' "$MANIFEST"
           yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = env(PORT)' "$MANIFEST"
 
@@ -144,3 +145,4 @@ jobs:
             git push origin "${BRANCH}"
             echo "🚀 Manifest atualizado no Fleet repo"
           fi
+ 
