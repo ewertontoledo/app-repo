@@ -1,19 +1,27 @@
-# Usa uma imagem Node.js base
+# Usa Node.js 18 Alpine
 FROM node:18-alpine
 
-# Define o diretório de trabalho dentro do contêiner
+# Cria usuário não-root
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+# Diretório de trabalho
 WORKDIR /app
 
-# Copia os arquivos de configuração e lockfile
+# Copia arquivos de configuração do Node
 COPY package.json package-lock.json ./
 
-# Atualiza o npm para versão 9+ e instala dependências de produção
-RUN npm install -g npm@9 && npm install --omit=dev
+# Atualiza npm e instala dependências de produção
+RUN npm install -g npm@9 \
+    && npm ci --omit=dev \
+    && npm cache clean --force
 
-# Copia o restante dos arquivos da aplicação
+# Copia o restante do código da aplicação
 COPY . .
 
-# Expõe a porta que a aplicação irá usar
+# Altera para usuário não-root
+USER appuser
+
+# Porta da aplicação
 EXPOSE 9000
 
 # Comando para iniciar a aplicação
