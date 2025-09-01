@@ -11,10 +11,10 @@ jobs:
     env:
       APP_NAME: "app-teste-2"
       APP_PORT: 9100
-      TRIVY_FAIL_ON: "true"
+      TRIVY_FAIL_ON: "true"  # Troque para "false" se não quiser que quebre
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up QEMU
@@ -45,6 +45,7 @@ jobs:
       - name: Scan image with Trivy
         run: |
           IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
+          echo "🔒 Escaneando $IMAGE com Trivy..."
           curl -sfL https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.65.0_Linux-64bit.tar.gz -o trivy.tar.gz
           tar zxvf trivy.tar.gz
           sudo mv trivy /usr/local/bin/
