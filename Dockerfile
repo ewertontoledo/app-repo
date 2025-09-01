@@ -5,11 +5,10 @@ FROM node:18-alpine
 WORKDIR /app
 
 # Copia os arquivos de configuração e lockfile
-# Isso garante que o npm tenha o lockfile para uma instalação determinística
 COPY package.json package-lock.json ./
 
-# Instala as dependências de produção
-RUN npm install --omit=dev
+# Atualiza o npm para versão 9+ e instala dependências de produção
+RUN npm install -g npm@9 && npm install --omit=dev
 
 # Copia o restante dos arquivos da aplicação
 COPY . .
