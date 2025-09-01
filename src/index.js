@@ -2,7 +2,7 @@ const express = require("express");
 const app = express();
 
 app.get("/", (req, res) => {
-  res.send("🚀 Hello World from Node.js + Docker + GitHub Actions + um teste de atualização de imagem!");
+  res.send("🚀 Hello World from Node.js + Docker + GitHub Actions!");
 });
 
 // Porta definida via variável de ambiente ou fallback para 9000
