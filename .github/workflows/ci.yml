@@ -2,7 +2,7 @@ name: Build image -> OCIR, Trivy Scan and Update Fleet repo
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 jobs:
@@ -12,17 +12,20 @@ jobs:
       APP_NAME: "app-teste-2"
       APP_PORT: 9100
       TRIVY_FAIL_ON: "true"
+      IMAGE_TAG: ${{ secrets.APP_IMAGE_TAG }} # exemplo: 977c2abc6e898c8f47111a30c9e77a7f1116127b
 
     steps:
+      # 1️⃣ Checkout repository
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 2️⃣ Setup QEMU e Buildx
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
+      # 3️⃣ Login OCIR
       - name: Login to OCIR
         uses: docker/login-action@v2
         with:
@@ -30,38 +33,34 @@ jobs:
           username: ${{ secrets.OCIR_USERNAME }}
           password: ${{ secrets.OCIR_AUTH_TOKEN }}
 
-      - name: Build and push image
+      # 4️⃣ Build e push da imagem se não existir
+      - name: Build and push image if not exists
         run: |
           set -euo pipefail
-          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
-          echo "📦 Buildando e pushando $IMAGE..."
-          docker buildx build --platform linux/amd64,linux/arm64 -t "$IMAGE" --push .
+          IMAGE="gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${IMAGE_TAG}"
+          echo "🔍 Verificando se a imagem $IMAGE já existe..."
+          if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "✅ Imagem $IMAGE já existe, pulando build."
+          else
+            echo "📦 Imagem $IMAGE não encontrada. Buildando e pushando..."
+            docker buildx build --platform linux/amd64,linux/arm64 -t "$IMAGE" --push .
 
+      # 5️⃣ Scan Trivy
       - name: Scan image with Trivy
-        run: |
-          set -euo pipefail
-          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
-          echo "🔒 Escaneando $IMAGE com Trivy..."
-          curl -sfL https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.65.0_Linux-64bit.tar.gz -o trivy.tar.gz
-          tar zxvf trivy.tar.gz
-          sudo mv trivy /usr/local/bin/
-          mkdir -p trivy-reports
-          trivy image --exit-code 0 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE"
-          zip -r trivy-reports.zip trivy-reports
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${IMAGE_TAG}"
+          format: json
+          output: trivy-reports/trivy-report.json
+          severity: HIGH,CRITICAL
+          exit-code: 0
+      - name: Zip Trivy reports
+        run: zip -r trivy-reports.zip trivy-reports
 
-      - name: Generate upgrade suggestions JSON
-        run: |
-          set -euo pipefail
-          jq '[.Results[].Vulnerabilities[]? 
-               | select(.Severity=="HIGH" or .Severity=="CRITICAL") 
-               | {package: .PkgName, current_version: .InstalledVersion, suggested_fix: .FixedVersion, severity: .Severity, cve: .VulnerabilityID}]' \
-               trivy-reports/trivy-report.json > trivy-reports/upgrade-suggestions.json
-          echo "📄 Arquivo de sugestões gerado em trivy-reports/upgrade-suggestions.json"
-
-      - name: Show Trivy JSON and fail if needed
+      # 6️⃣ Fail on HIGH/CRITICAL vulnerabilities
+      - name: Fail if HIGH/CRITICAL vulnerabilities
         if: ${{ env.TRIVY_FAIL_ON == 'true' }}
         run: |
-          set -euo pipefail
           COUNT=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' trivy-reports/trivy-report.json)
           echo "📄 Relatório completo de vulnerabilidades:"
           jq '.' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade crítica"
@@ -72,6 +71,7 @@ jobs:
             echo "✅ Nenhuma vulnerabilidade HIGH/CRITICAL encontrada"
           fi
 
+      # 7️⃣ Upload dos relatórios
       - name: Upload Trivy reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -85,12 +85,13 @@ jobs:
           name: trivy-reports-zip
           path: trivy-reports.zip
 
+      # 8️⃣ Atualiza Fleet repo
       - name: Update Fleet repo manifests
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
           FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
-          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}
+          IMAGE: "gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${IMAGE_TAG}"
           APP_NAME: ${{ env.APP_NAME }}
           APP_PORT: ${{ env.APP_PORT }}
         run: |
@@ -105,23 +106,19 @@ jobs:
           git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
           cd fleet-repo || exit 1
 
-          # Instala yq
           sudo apt-get update && sudo apt-get install -y jq
           curl -sL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
           chmod +x yq && sudo mv yq /usr/local/bin/
 
-          # Caminho dinâmico do Deployment
           DEPLOYMENT_FILE="k8s/apps/${APP_NAME}/deployment.yaml"
           if [ -f "$DEPLOYMENT_FILE" ]; then
-            # Atualiza apenas a imagem
+            # Atualiza somente a imagem
             yq e -i '.spec.template.spec.containers[] |= (select(.name == "'"${APP_NAME}"'") .image = env(IMAGE))' "$DEPLOYMENT_FILE"
-
-            # Atualiza porta somente se não estiver definida
+            # Atualiza porta somente se estiver vazia
             CURRENT_PORT=$(yq e '.spec.template.spec.containers[] | select(.name=="'"${APP_NAME}"'") | .ports[0].containerPort // ""' "$DEPLOYMENT_FILE")
             if [ -z "$CURRENT_PORT" ]; then
               yq e -i '.spec.template.spec.containers[] |= (select(.name == "'"${APP_NAME}"'") .ports[0].containerPort = env(APP_PORT))' "$DEPLOYMENT_FILE"
             fi
-
             if git diff --quiet --exit-code; then
               echo "✅ Nenhuma alteração necessária"
             else
