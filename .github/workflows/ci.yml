@@ -11,7 +11,7 @@ jobs:
     env:
       APP_NAME: "app-teste-2"
       APP_PORT: 9100
-      TRIVY_FAIL_ON: "true"   # troque para "false" se não quiser que quebre
+      TRIVY_FAIL_ON: "true"
 
     steps:
       - name: Checkout
@@ -45,18 +45,12 @@ jobs:
       - name: Scan image with Trivy
         run: |
           IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
-          echo "🔒 Escaneando $IMAGE com Trivy..."
-          
           curl -sfL https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.65.0_Linux-64bit.tar.gz -o trivy.tar.gz
           tar zxvf trivy.tar.gz
           sudo mv trivy /usr/local/bin/
           mkdir -p trivy-reports
 
-          # Sempre gera JSON, não quebra a pipeline
           trivy image --exit-code 0 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE"
-
-          echo "📄 Vulnerabilidades HIGH/CRITICAL:"
-          jq '.Results[].Vulnerabilities[]? | {VulnerabilityID, Severity, PkgName, InstalledVersion, FixedVersion}' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade crítica"
 
       - name: Generate upgrade suggestions JSON
         run: |
@@ -71,15 +65,24 @@ jobs:
                  }]' trivy-reports/trivy-report.json > trivy-reports/upgrade-suggestions.json
           echo "📄 Arquivo de sugestões gerado em trivy-reports/upgrade-suggestions.json"
 
-      - name: Fail if HIGH/CRITICAL vulnerabilities found
+      - name: Show Trivy JSON and fail if needed
         if: env.TRIVY_FAIL_ON == 'true'
         run: |
           COUNT=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' trivy-reports/trivy-report.json)
           if [ "$COUNT" -gt 0 ]; then
             echo "❌ Encontradas $COUNT vulnerabilidades HIGH/CRITICAL"
+            echo "📄 Relatório completo de vulnerabilidades:"
+            jq '.' trivy-reports/trivy-report.json
             exit 1
           else
             echo "✅ Nenhuma vulnerabilidade HIGH/CRITICAL encontrada"
+
+      - name: Upload Trivy reports (sempre)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-reports
+          path: trivy-reports/
 
       - name: Update Fleet repo manifests
         env:
@@ -113,9 +116,3 @@ jobs:
             git commit -m "Atualiza imagem e porta para ${APP_NAME}"
             git push origin "${BRANCH}"
             echo "🚀 Manifest atualizado no Fleet repo"
-
-      - name: Upload Trivy reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: trivy-reports
-          path: trivy-reports/
