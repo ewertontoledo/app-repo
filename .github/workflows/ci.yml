@@ -1,4 +1,4 @@
-name: Build image -> OCIR, Trivy scan and update Fleet repo
+name: Build image -> Push to OCIR, Trivy Scan and Update Fleet repo
 
 on:
   push:
@@ -11,6 +11,7 @@ jobs:
     env:
       APP_NAME: "app-teste-2"
       APP_PORT: 9100
+      TRIVY_FAIL_ON: "true"   # troque para "false" se não quiser que quebre
 
     steps:
       - name: Checkout
@@ -51,7 +52,12 @@ jobs:
           sudo mv trivy /usr/local/bin/
 
           mkdir -p trivy-reports
-          trivy image --exit-code 1 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE" || true
+
+          if [[ "${TRIVY_FAIL_ON}" == "true" ]]; then
+            trivy image --exit-code 1 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE"
+          else
+            trivy image --exit-code 0 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE" || true
+          fi
 
           echo "📄 Vulnerabilidades HIGH/CRITICAL:"
           jq '.Results[].Vulnerabilities[]? | {VulnerabilityID, Severity, PkgName, InstalledVersion, FixedVersion}' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade crítica"
