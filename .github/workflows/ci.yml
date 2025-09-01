@@ -12,6 +12,7 @@ jobs:
       APP_NAME: "app-teste-2"
       APP_PORT: 9100
       TRIVY_FAIL_ON: "true"
+      IMAGE_TAG: ${{ github.sha }}
 
     steps:
       # 1️⃣ Checkout repository
@@ -32,12 +33,13 @@ jobs:
           username: ${{ secrets.OCIR_USERNAME }}
           password: ${{ secrets.OCIR_AUTH_TOKEN }}
 
-      # 4️⃣ Build and push image (se não existir)
+      # 4️⃣ Build and push image if not exists
       - name: Build and push image if not exists
+        env:
+          GITHUB_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          TAG="${GITHUB_SHA}"  # ou "latest" se quiser
-          IMAGE="gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${TAG}"
+          IMAGE="gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${GITHUB_SHA}"
           echo "🔍 Verificando se a imagem $IMAGE já existe..."
           if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
             echo "✅ Imagem $IMAGE já existe, pulando build."
@@ -47,12 +49,13 @@ jobs:
 
       # 5️⃣ Scan Trivy
       - name: Scan image with Trivy
-        run: |
-          set -euo pipefail
-          TAG="${GITHUB_SHA}"  # mesma tag do build
-          IMAGE="gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${TAG}"
-          mkdir -p trivy-reports
-          docker run --rm -v $(pwd)/trivy-reports:/report aquasec/trivy:latest image --exit-code 0 --severity HIGH,CRITICAL --format json -o /report/trivy-report.json "$IMAGE"
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${GITHUB_SHA}"
+          format: json
+          output: trivy-reports/trivy-report.json
+          severity: HIGH,CRITICAL
+          exit-code: 0
 
       - name: Zip Trivy reports
         run: zip -r trivy-reports.zip trivy-reports
