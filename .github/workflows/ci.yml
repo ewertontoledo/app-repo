@@ -41,6 +41,31 @@ jobs:
             docker push "$IMAGE"
           fi
 
+      # --- CHECK NODE.JS VERSION ---
+      - name: Check Node.js LTS support status
+        run: |
+          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
+          echo "🔎 Verificando versão do Node.js na imagem $IMAGE ..."
+          
+          NODE_VERSION=$(docker run --rm $IMAGE node -v | sed 's/v//')
+          echo "📦 Node.js detectado: $NODE_VERSION"
+
+          # Função simples para comparar versões
+          version_lt() { [ "$(printf '%s\n' "$1" "$2" | sort -V | head -n1)" != "$2" ]; }
+
+          CURRENT_LTS="20.0.0"
+          NEXT_LTS="22.0.0"
+          EOL_VERSION="18.0.0"
+
+          if version_lt "$NODE_VERSION" "$EOL_VERSION"; then
+            echo "❌ Node.js $NODE_VERSION está em EOL. Atualize para pelo menos $CURRENT_LTS ou $NEXT_LTS."
+            exit 1
+          elif version_lt "$NODE_VERSION" "$CURRENT_LTS"; then
+            echo "⚠️ Node.js $NODE_VERSION ainda funciona, mas está em manutenção. Recomenda-se atualizar para $CURRENT_LTS ou $NEXT_LTS."
+          else
+            echo "✅ Node.js $NODE_VERSION está em uma versão suportada."
+          fi
+
       # --- TRIVY ANTES DO MANIFEST ---
       - name: Scan image with Trivy
         run: |
