@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       APP_NAME: "app-teste-2"
+      APP_PORT: 9100   # <-- Adicione aqui a porta do container
 
     steps:
       # 1️⃣ Checkout do repositório
@@ -50,11 +51,10 @@ jobs:
           IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
           echo "🔒 Escaneando imagem $IMAGE com Trivy..."
 
-          # Instala Trivy de forma leve
+          # Instala Trivy
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh
 
           mkdir -p trivy-reports
-          # gera relatório JSON (não falha o workflow se encontrar vulnerabilidades)
           trivy image --exit-code 1 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE" || true
 
           echo "📄 Resumo das vulnerabilidades HIGH e CRITICAL:"
@@ -67,6 +67,7 @@ jobs:
           FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
           IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
+          PORT: ${{ env.APP_PORT }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
@@ -82,12 +83,13 @@ jobs:
 
           MANIFEST="k8s/apps/${APP_NAME}/deployment.yaml"
           yq e -i '.spec.template.spec.containers[0].image = env(IMAGE)' "$MANIFEST"
+          yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = env(PORT)' "$MANIFEST"
 
           if git diff --quiet --exit-code; then
             echo "✅ Nenhuma alteração detectada no manifest"
           else
             git add "$MANIFEST"
-            git commit -m "Atualiza imagem para ${IMAGE} [ci skip]"
+            git commit -m "Atualiza imagem e porta para ${IMAGE}:${PORT} [ci skip]"
             git push origin "${BRANCH}"
             echo "✅ Manifest atualizado no Fleet repo"
 
