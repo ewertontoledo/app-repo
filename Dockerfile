@@ -1,8 +1,8 @@
-# Usa Node.js 18 Alpine
-FROM node:18-alpine
+# 🚨 Imagem vulnerável propositalmente
+FROM node:10
 
 # Cria usuário não-root
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN addgroup appgroup && useradd -M -g appgroup appuser
 
 # Diretório de trabalho
 WORKDIR /app
@@ -10,9 +10,8 @@ WORKDIR /app
 # Copia arquivos de configuração do Node
 COPY package.json package-lock.json* ./
 
-# Atualiza npm e instala dependências de produção
-RUN npm install -g npm@9 \
-    && npm install --production \
+# Instala dependências (npm antigo com CVEs conhecidos)
+RUN npm install --production \
     && npm cache clean --force
 
 # Copia o restante do código da aplicação
