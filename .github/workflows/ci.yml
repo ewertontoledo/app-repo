@@ -11,7 +11,8 @@ jobs:
     env:
       APP_NAME: "app-teste-2"
       APP_PORT: 9000
-      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}  # opcional para notificação
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout
@@ -57,6 +58,9 @@ jobs:
           trivy image --exit-code 1 --severity HIGH,CRITICAL \
             --format json -o trivy-reports/trivy-report.json "$IMAGE"
 
+          # Gera ZIP do relatório
+          zip -r trivy-reports.zip trivy-reports
+
           COUNT=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' trivy-reports/trivy-report.json)
           echo "Vulnerabilidades HIGH/CRITICAL encontradas: $COUNT"
 
@@ -65,12 +69,19 @@ jobs:
             exit 1
           fi
 
-      - name: Upload Trivy report
+      - name: Upload Trivy report JSON
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: trivy-report
+          name: trivy-report-json
           path: trivy-reports/trivy-report.json
+
+      - name: Upload Trivy report ZIP
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report-zip
+          path: trivy-reports.zip
 
       - name: Show Trivy JSON summary in log
         if: always()
@@ -78,14 +89,55 @@ jobs:
           echo "🔍 Vulnerabilidades HIGH/CRITICAL detectadas:"
           jq '.' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade encontrada"
 
-      # --- Envia notificação para Teams se falhar ---
+      # --- Notificação Teams com link para relatório ---
       - name: Notify Teams on Trivy failure
         if: failure()
         env:
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -n "$TEAMS_WEBHOOK_URL" ]; then
-            PAYLOAD="{\"text\": \"⚠️ Pipeline falhou no Trivy para o app ${{ env.APP_NAME }}. Verifique o relatório.\"}"
+            ARTIFACT_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" \
+              | jq -r '.artifacts[] | select(.name=="trivy-report-zip") | .id')
+
+            if [ -n "$ARTIFACT_ID" ]; then
+              REPORT_URL="https://github.com/${GITHUB_REPOSITORY}/suites/${GITHUB_RUN_ID}/artifacts/${ARTIFACT_ID}"
+            else
+              REPORT_URL="Artifact não encontrado"
+            fi
+
+            VULNERABILITIES=$(jq -r '
+              .Results[].Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL") |
+              "- \(.VulnerabilityID) (\(.Severity)) em \(.PkgName) -> Corrigir para: \(.FixedVersion // "N/A")"
+            ' trivy-reports/trivy-report.json | paste -sd "\\n" -)
+
+            if [ -z "$VULNERABILITIES" ]; then
+              VULNERABILITIES="✅ Nenhuma vulnerabilidade HIGH/CRITICAL encontrada"
+              COLOR="00FF00"
+            else
+              COLOR="FF0000"
+            fi
+
+            read -r -d '' PAYLOAD << EOF
+{
+  "@type": "MessageCard",
+  "@context": "https://schema.org/extensions",
+  "summary": "Pipeline Trivy falhou",
+  "themeColor": "${COLOR}",
+  "title": "⚠️ Pipeline falhou no Trivy para o app ${{ env.APP_NAME }}",
+  "sections": [{
+      "activityTitle": "Resumo de vulnerabilidades HIGH/CRITICAL",
+      "text": "${VULNERABILITIES}"
+    },
+    {
+      "activityTitle": "Relatório completo",
+      "text": "[Clique aqui para baixar o ZIP do Trivy report](${REPORT_URL})"
+    }
+  ]
+}
+EOF
+
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
           fi
 
