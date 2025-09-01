@@ -76,3 +76,4 @@ jobs:
             git push origin "${BRANCH}"
             echo "✅ Manifest atualizado no Fleet repo"
           fi
+          
