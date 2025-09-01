@@ -1,31 +1,36 @@
 name: Build image -> OCIR, Trivy Scan and Update Fleet repo
 
 on:
-  push:
-    branches: ["main"]
   workflow_dispatch:
+    inputs:
+      app_name:
+        description: 'Nome do app'
+        required: true
+        default: 'app-teste-2'
+      app_port:
+        description: 'Porta do container'
+        required: true
+        default: '9100'
 
 jobs:
-  build-and-push:
+  build-and-scan:
     runs-on: ubuntu-latest
     env:
-      APP_NAME: "app-teste-2"
-      APP_PORT: 9100
-      TRIVY_FAIL_ON: "true"
+      APP_NAME: ${{ github.event.inputs.app_name }}
+      APP_PORT: ${{ github.event.inputs.app_port }}
+      TRIVY_FAIL_ON: true
       GITHUB_SHA: ${{ github.sha }}
-
     steps:
-      # 1️⃣ Checkout repository
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Setup QEMU e Buildx
+      # Configura Buildx/QEMU
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
-      # 3️⃣ Login OCIR
+      # Login OCIR
       - name: Login to OCIR
         uses: docker/login-action@v2
         with:
@@ -33,22 +38,19 @@ jobs:
           username: ${{ secrets.OCIR_USERNAME }}
           password: ${{ secrets.OCIR_AUTH_TOKEN }}
 
-      # 4️⃣ Build and push image if not exists
+      # Build e push da imagem se não existir
       - name: Build and push image if not exists
-        shell: /usr/bin/bash -e {0}
         run: |
           set -euo pipefail
-
           IMAGE="gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${GITHUB_SHA}"
           echo "🔍 Verificando se a imagem $IMAGE já existe..."
-
           if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
-            echo "✅ Imagem $IMAGE já existe, pulando build."
+            echo "✅ Imagem já existe, pulando build."
           else
             echo "📦 Imagem não encontrada. Buildando e pushando $IMAGE..."
-            docker buildx build --platform linux/amd64,linux/arm64 -t "$IMAGE" --push .
+            docker buildx build --platform linux/amd64,linux/arm64 -t "$IMAGE" --push "k8s/apps/${APP_NAME}"
 
-      # 5️⃣ Scan Trivy
+      # Scan com Trivy
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@master
         with:
@@ -61,11 +63,9 @@ jobs:
       - name: Zip Trivy reports
         run: zip -r trivy-reports.zip trivy-reports
 
-      # 6️⃣ Fail on HIGH/CRITICAL vulnerabilities
       - name: Fail if HIGH/CRITICAL vulnerabilities
         if: ${{ env.TRIVY_FAIL_ON == 'true' }}
         run: |
-          set -euo pipefail
           COUNT=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' trivy-reports/trivy-report.json)
           echo "📄 Relatório completo de vulnerabilidades:"
           jq '.' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade crítica"
@@ -74,9 +74,8 @@ jobs:
             exit 1
           else
             echo "✅ Nenhuma vulnerabilidade HIGH/CRITICAL encontrada"
-          fi
 
-      # 7️⃣ Upload dos relatórios
+      # Upload dos relatórios
       - name: Upload Trivy reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -90,9 +89,8 @@ jobs:
           name: trivy-reports-zip
           path: trivy-reports.zip
 
-      # 8️⃣ Atualiza Fleet repo
+      # Atualiza Fleet repo
       - name: Update Fleet repo manifests
-        shell: /usr/bin/bash -e {0}
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
           FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
@@ -120,11 +118,13 @@ jobs:
           if [ -f "$DEPLOYMENT_FILE" ]; then
             # Atualiza somente a imagem
             yq e -i '.spec.template.spec.containers[] |= (select(.name == "'"${APP_NAME}"'") .image = env(IMAGE))' "$DEPLOYMENT_FILE"
+
             # Atualiza porta somente se estiver vazia
             CURRENT_PORT=$(yq e '.spec.template.spec.containers[] | select(.name=="'"${APP_NAME}"'") | .ports[0].containerPort // ""' "$DEPLOYMENT_FILE")
             if [ -z "$CURRENT_PORT" ]; then
               yq e -i '.spec.template.spec.containers[] |= (select(.name == "'"${APP_NAME}"'") .ports[0].containerPort = env(APP_PORT))' "$DEPLOYMENT_FILE"
             fi
+
             if git diff --quiet --exit-code; then
               echo "✅ Nenhuma alteração necessária"
             else
@@ -135,4 +135,3 @@ jobs:
             fi
           else
             echo "⚠️ Arquivo $DEPLOYMENT_FILE não encontrado, pulando atualização"
-          fi
