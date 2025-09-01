@@ -40,7 +40,6 @@ jobs:
             echo "📦 Buildando e pushando $IMAGE..."
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
-          fi
 
       - name: Scan image with Trivy
         run: |
@@ -50,11 +49,10 @@ jobs:
           curl -sfL https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.65.0_Linux-64bit.tar.gz -o trivy.tar.gz
           tar zxvf trivy.tar.gz
           sudo mv trivy /usr/local/bin/
-
           mkdir -p trivy-reports
 
           # Sempre gera JSON, não quebra a pipeline aqui
-          trivy image --exit-code 0 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE" || true
+          trivy image --exit-code 0 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE"
 
           echo "📄 Vulnerabilidades HIGH/CRITICAL:"
           jq '.Results[].Vulnerabilities[]? | {VulnerabilityID, Severity, PkgName, InstalledVersion, FixedVersion}' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade crítica"
@@ -69,4 +67,54 @@ jobs:
                    suggested_fix: .FixedVersion,
                    severity: .Severity,
                    cve: .VulnerabilityID
-                 }]' trivy-reports/tr
+                 }]' trivy-reports/trivy-report.json > trivy-reports/upgrade-suggestions.json
+          echo "📄 Arquivo de sugestões gerado em trivy-reports/upgrade-suggestions.json"
+
+      - name: Fail if HIGH/CRITICAL vulnerabilities found
+        if: env.TRIVY_FAIL_ON == 'true'
+        run: |
+          COUNT=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' trivy-reports/trivy-report.json)
+          if [ "$COUNT" -gt 0 ]; then
+            echo "❌ Encontradas $COUNT vulnerabilidades HIGH/CRITICAL"
+            exit 1
+          else
+            echo "✅ Nenhuma vulnerabilidade HIGH/CRITICAL encontrada"
+
+      - name: Update Fleet repo manifests
+        env:
+          FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
+          FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
+          FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
+          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ github.sha }}
+          PORT: ${{ env.APP_PORT }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          REPO_NO_PROTO=${FLEET_REPO#https://}
+          CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
+          BRANCH="${FLEET_BRANCH:-main}"
+          git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
+          cd fleet-repo || exit 1
+
+          sudo apt-get update && sudo apt-get install -y jq
+          curl -sL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
+          chmod +x yq && sudo mv yq /usr/local/bin/
+
+          MANIFEST="k8s/apps/${APP_NAME}/deployment.yaml"
+          yq e -i '.spec.template.spec.containers[0].image = env(IMAGE)' "$MANIFEST"
+          yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = env(PORT)' "$MANIFEST"
+
+          if git diff --quiet --exit-code; then
+            echo "✅ Nenhuma atualização necessária"
+          else
+            git add "$MANIFEST"
+            git commit -m "Atualiza imagem e porta para ${APP_NAME}"
+            git push origin "${BRANCH}"
+            echo "🚀 Manifest atualizado no Fleet repo"
+
+      - name: Upload Trivy reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-reports
+          path: trivy-reports/
