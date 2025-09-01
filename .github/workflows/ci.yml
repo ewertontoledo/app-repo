@@ -34,34 +34,37 @@ jobs:
           username: ${{ secrets.OCIR_USERNAME }}
           password: ${{ secrets.OCIR_AUTH_TOKEN }}
 
-      # 5️⃣ Build e push da imagem (se ainda não existir)
+      # 5️⃣ Define tag curto do commit
+      - name: Set short SHA
+        id: vars
+        run: echo "SHORT_SHA=$(echo ${GITHUB_SHA} | cut -c1-40)" >> $GITHUB_ENV
+
+      # 6️⃣ Build e push da imagem (se ainda não existir)
       - name: Build and push image if not exists
         run: |
           set -euo pipefail
-          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
-          echo "🔍 Verificando se a imagem já existe..."
+          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${SHORT_SHA}"
+          echo "🔍 Verificando se a imagem $IMAGE já existe..."
           if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
             echo "✅ Imagem $IMAGE já existe"
           else
             echo "📦 Buildando e pushando $IMAGE..."
             docker buildx build --platform linux/amd64,linux/arm64 -t "$IMAGE" --push .
-          fi
 
-      # 6️⃣ Scan com Trivy
+      # 7️⃣ Scan com Trivy
       - name: Scan image with Trivy
         run: |
           set -euo pipefail
-          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
+          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${SHORT_SHA}"
           echo "🔒 Escaneando $IMAGE com Trivy..."
           curl -sfL https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.65.0_Linux-64bit.tar.gz -o trivy.tar.gz
           tar zxvf trivy.tar.gz
           sudo mv trivy /usr/local/bin/
           mkdir -p trivy-reports
           trivy image --exit-code 0 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE"
-          # Gera ZIP do relatório
           zip -r trivy-reports.zip trivy-reports
 
-      # 7️⃣ Gerar JSON de sugestões de upgrade
+      # 8️⃣ Gerar JSON de sugestões de upgrade
       - name: Generate upgrade suggestions JSON
         run: |
           set -euo pipefail
@@ -76,7 +79,7 @@ jobs:
                  }]' trivy-reports/trivy-report.json > trivy-reports/upgrade-suggestions.json
           echo "📄 Arquivo de sugestões gerado em trivy-reports/upgrade-suggestions.json"
 
-      # 8️⃣ Mostrar relatório e falhar se necessário
+      # 9️⃣ Mostrar relatório e falhar se necessário
       - name: Show Trivy JSON and fail if needed
         if: ${{ env.TRIVY_FAIL_ON == 'true' }}
         run: |
@@ -91,7 +94,7 @@ jobs:
             echo "✅ Nenhuma vulnerabilidade HIGH/CRITICAL encontrada"
           fi
 
-      # 9️⃣ Upload dos relatórios Trivy
+      # 🔟 Upload dos relatórios Trivy
       - name: Upload Trivy reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -105,7 +108,7 @@ jobs:
           name: trivy-reports-zip
           path: trivy-reports.zip
 
-      # 🔟 Instala jq e yq (antes do update do Fleet repo)
+      # 1️⃣1️⃣ Instala jq e yq
       - name: Install jq and yq
         run: |
           set -euo pipefail
@@ -115,13 +118,13 @@ jobs:
           chmod +x yq
           sudo mv yq /usr/local/bin/
 
-      # 1️⃣1️⃣ Atualiza os manifests no Fleet repo
+      # 1️⃣2️⃣ Atualiza os manifests no Fleet repo
       - name: Update Fleet repo manifests
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
           FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
-          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ github.sha }}
+          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${SHORT_SHA}
           PORT: ${{ env.APP_PORT }}
         run: |
           set -euo pipefail
@@ -146,4 +149,3 @@ jobs:
             git push origin "${BRANCH}"
             echo "🚀 Manifest atualizado no Fleet repo"
           fi
-          
