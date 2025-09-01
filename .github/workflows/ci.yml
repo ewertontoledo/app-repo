@@ -12,7 +12,6 @@ jobs:
       APP_NAME: "app-teste-2"
       APP_PORT: 9100
       TRIVY_FAIL_ON: "true"
-      SHORT_SHA: ${{ github.sha }}
 
     steps:
       - name: Checkout
@@ -34,14 +33,14 @@ jobs:
       - name: Build and push image
         run: |
           set -euo pipefail
-          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${SHORT_SHA}"
+          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
           echo "📦 Buildando e pushando $IMAGE..."
           docker buildx build --platform linux/amd64,linux/arm64 -t "$IMAGE" --push .
 
       - name: Scan image with Trivy
         run: |
           set -euo pipefail
-          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${SHORT_SHA}"
+          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
           echo "🔒 Escaneando $IMAGE com Trivy..."
           curl -sfL https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.65.0_Linux-64bit.tar.gz -o trivy.tar.gz
           tar zxvf trivy.tar.gz
@@ -91,7 +90,7 @@ jobs:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
           FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
-          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${SHORT_SHA}
+          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}
           APP_NAME: ${{ env.APP_NAME }}
           APP_PORT: ${{ env.APP_PORT }}
         run: |
@@ -114,14 +113,20 @@ jobs:
           # Caminho dinâmico do Deployment
           DEPLOYMENT_FILE="k8s/apps/${APP_NAME}/deployment.yaml"
           if [ -f "$DEPLOYMENT_FILE" ]; then
+            # Atualiza apenas a imagem
             yq e -i '.spec.template.spec.containers[] |= (select(.name == "'"${APP_NAME}"'") .image = env(IMAGE))' "$DEPLOYMENT_FILE"
-            yq e -i '.spec.template.spec.containers[] |= (select(.name == "'"${APP_NAME}"'") .ports[0].containerPort = env(APP_PORT))' "$DEPLOYMENT_FILE"
+
+            # Atualiza porta somente se não estiver definida
+            CURRENT_PORT=$(yq e '.spec.template.spec.containers[] | select(.name=="'"${APP_NAME}"'") | .ports[0].containerPort // ""' "$DEPLOYMENT_FILE")
+            if [ -z "$CURRENT_PORT" ]; then
+              yq e -i '.spec.template.spec.containers[] |= (select(.name == "'"${APP_NAME}"'") .ports[0].containerPort = env(APP_PORT))' "$DEPLOYMENT_FILE"
+            fi
 
             if git diff --quiet --exit-code; then
               echo "✅ Nenhuma alteração necessária"
             else
               git add "$DEPLOYMENT_FILE"
-              git commit -m "Atualiza imagem e porta para ${APP_NAME} [ci skip]"
+              git commit -m "Atualiza imagem (e porta se necessário) para ${APP_NAME} [ci skip]"
               git push origin "${BRANCH}"
               echo "🚀 Manifest atualizado no Fleet repo"
             fi
