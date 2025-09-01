@@ -88,7 +88,7 @@ jobs:
             echo "❌ Encontradas $COUNT vulnerabilidades HIGH/CRITICAL"
             exit 1
           else
-            echo "✅ Nenhuma vulnerabilidade HIGH/CRITICAL encontrada
+            echo "✅ Nenhuma vulnerabilidade HIGH/CRITICAL encontrada"
           fi
 
       # 9️⃣ Upload dos relatórios Trivy
@@ -145,3 +145,4 @@ jobs:
             git commit -m "Atualiza imagem e porta para ${APP_NAME}"
             git push origin "${BRANCH}"
             echo "🚀 Manifest atualizado no Fleet repo"
+          fi
