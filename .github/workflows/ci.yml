@@ -15,19 +15,15 @@ jobs:
       SHORT_SHA: ${{ github.sha }}
 
     steps:
-      # 1️⃣ Checkout do repositório
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2️⃣ Configura QEMU
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
 
-      # 3️⃣ Configura Docker Buildx
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
-      # 4️⃣ Login no OCIR
       - name: Login to OCIR
         uses: docker/login-action@v2
         with:
@@ -35,7 +31,6 @@ jobs:
           username: ${{ secrets.OCIR_USERNAME }}
           password: ${{ secrets.OCIR_AUTH_TOKEN }}
 
-      # 5️⃣ Build e push da imagem
       - name: Build and push image
         run: |
           set -euo pipefail
@@ -43,7 +38,6 @@ jobs:
           echo "📦 Buildando e pushando $IMAGE..."
           docker buildx build --platform linux/amd64,linux/arm64 -t "$IMAGE" --push .
 
-      # 6️⃣ Scan com Trivy
       - name: Scan image with Trivy
         run: |
           set -euo pipefail
@@ -56,7 +50,6 @@ jobs:
           trivy image --exit-code 0 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE"
           zip -r trivy-reports.zip trivy-reports
 
-      # 7️⃣ Gerar JSON de sugestões de upgrade
       - name: Generate upgrade suggestions JSON
         run: |
           set -euo pipefail
@@ -66,7 +59,6 @@ jobs:
                trivy-reports/trivy-report.json > trivy-reports/upgrade-suggestions.json
           echo "📄 Arquivo de sugestões gerado em trivy-reports/upgrade-suggestions.json"
 
-      # 8️⃣ Mostrar relatório e falhar se necessário
       - name: Show Trivy JSON and fail if needed
         if: ${{ env.TRIVY_FAIL_ON == 'true' }}
         run: |
@@ -81,7 +73,6 @@ jobs:
             echo "✅ Nenhuma vulnerabilidade HIGH/CRITICAL encontrada"
           fi
 
-      # 9️⃣ Upload dos relatórios Trivy
       - name: Upload Trivy reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -95,7 +86,6 @@ jobs:
           name: trivy-reports-zip
           path: trivy-reports.zip
 
-      # 🔟 Atualiza Fleet repo
       - name: Update Fleet repo manifests
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
@@ -109,7 +99,6 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Corrige substring do repo dentro do bash
           REPO_NO_PROTO=${FLEET_REPO#https://}
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
           BRANCH="${FLEET_BRANCH:-main}"
@@ -122,17 +111,20 @@ jobs:
           curl -sL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
           chmod +x yq && sudo mv yq /usr/local/bin/
 
-          # Atualiza Deployment
-          DEPLOYMENT_FILE="k8s/deployment-${APP_NAME}.yaml"
-          yq e -i '.spec.template.spec.containers[] |= (select(.name == "'"${APP_NAME}"'") .image = env(IMAGE))' "$DEPLOYMENT_FILE"
-          yq e -i '.spec.template.spec.containers[] |= (select(.name == "'"${APP_NAME}"'") .ports[0].containerPort = env(APP_PORT))' "$DEPLOYMENT_FILE"
+          # Caminho dinâmico do Deployment
+          DEPLOYMENT_FILE="k8s/apps/${APP_NAME}/deployment.yaml"
+          if [ -f "$DEPLOYMENT_FILE" ]; then
+            yq e -i '.spec.template.spec.containers[] |= (select(.name == "'"${APP_NAME}"'") .image = env(IMAGE))' "$DEPLOYMENT_FILE"
+            yq e -i '.spec.template.spec.containers[] |= (select(.name == "'"${APP_NAME}"'") .ports[0].containerPort = env(APP_PORT))' "$DEPLOYMENT_FILE"
 
-          # Commit e push
-          if git diff --quiet --exit-code; then
-            echo "✅ Nenhuma alteração necessária"
+            if git diff --quiet --exit-code; then
+              echo "✅ Nenhuma alteração necessária"
+            else
+              git add "$DEPLOYMENT_FILE"
+              git commit -m "Atualiza imagem e porta para ${APP_NAME} [ci skip]"
+              git push origin "${BRANCH}"
+              echo "🚀 Manifest atualizado no Fleet repo"
+            fi
           else
-            git add "$DEPLOYMENT_FILE"
-            git commit -m "Atualiza imagem e porta para ${APP_NAME} [ci skip]"
-            git push origin "${BRANCH}"
-            echo "🚀 Manifest atualizado no Fleet repo"
+            echo "⚠️ Arquivo $DEPLOYMENT_FILE não encontrado, pulando atualização"
           fi
