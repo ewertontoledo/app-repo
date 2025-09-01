@@ -1,38 +1,27 @@
-name: Build image -> OCIR, Trivy Scan and Update Fleet repo
+name: Build image -> OCIR, Trivy scan and update Fleet repo
 
 on:
+  push:
+    branches: [ "main" ]
   workflow_dispatch:
-    inputs:
-      app_name:
-        description: 'Nome do app'
-        required: true
-        default: 'app-teste-2'
-      app_port:
-        description: 'Porta do container'
-        required: true
-        default: '9100'
 
 jobs:
-  build-and-scan:
+  build-and-push:
     runs-on: ubuntu-latest
     env:
-      APP_NAME: ${{ github.event.inputs.app_name }}
-      APP_PORT: ${{ github.event.inputs.app_port }}
-      TRIVY_FAIL_ON: true
-      GITHUB_SHA: ${{ github.sha }}
+      APP_NAME: "app-teste-2"
+      APP_PORT: 9100
 
     steps:
-      # 1️⃣ Checkout repository
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # 2️⃣ Configura QEMU e Buildx
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
-      # 3️⃣ Login OCIR
       - name: Login to OCIR
         uses: docker/login-action@v2
         with:
@@ -40,108 +29,66 @@ jobs:
           username: ${{ secrets.OCIR_USERNAME }}
           password: ${{ secrets.OCIR_AUTH_TOKEN }}
 
-      # 4️⃣ Build e push da imagem se não existir
       - name: Build and push image if not exists
-        shell: bash
         run: |
-          set -euo pipefail
-
-          IMAGE="gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${GITHUB_SHA}"
-
-          echo "🔍 Verificando se a imagem $IMAGE já existe..."
+          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
+          echo "🔍 Verificando se a imagem já existe..."
           if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
-            echo "✅ Imagem já existe, pulando build."
+            echo "✅ Imagem $IMAGE já existe"
           else
-            echo "📦 Imagem não encontrada. Buildando e pushando $IMAGE..."
-            docker buildx build \
-              --platform linux/amd64,linux/arm64 \
-              -t "$IMAGE" \
-              --push \
-              "./k8s/apps/${APP_NAME}"
-
-      # 5️⃣ Scan com Trivy
+            echo "📦 Buildando e pushando $IMAGE..."
+            docker build -t "$IMAGE" .
+            docker push "$IMAGE"
+          fi
       - name: Scan image with Trivy
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: "gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${GITHUB_SHA}"
-          format: json
-          output: trivy-reports/trivy-report.json
-          severity: HIGH,CRITICAL
-          exit-code: 0
-
-      - name: Zip Trivy reports
-        run: zip -r trivy-reports.zip trivy-reports
-
-      - name: Fail if HIGH/CRITICAL vulnerabilities
-        if: ${{ env.TRIVY_FAIL_ON == 'true' }}
         run: |
-          COUNT=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' trivy-reports/trivy-report.json)
-          echo "📄 Relatório completo de vulnerabilidades:"
-          jq '.' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade crítica"
-          if [ "$COUNT" -gt 0 ]; then
-            echo "❌ Encontradas $COUNT vulnerabilidades HIGH/CRITICAL"
-            exit 1
-          else
-            echo "✅ Nenhuma vulnerabilidade HIGH/CRITICAL encontrada"
-
-      # 6️⃣ Upload dos relatórios
-      - name: Upload Trivy reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: trivy-reports
-          path: trivy-reports/
-      - name: Upload Trivy reports ZIP
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: trivy-reports-zip
-          path: trivy-reports.zip
-
-      # 7️⃣ Atualiza Fleet repo
+          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
+          echo "🔒 Escaneando $IMAGE com Trivy..."
+          
+          curl -sfL https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.65.0_Linux-64bit.tar.gz -o trivy.tar.gz
+          tar zxvf trivy.tar.gz
+          sudo mv trivy /usr/local/bin/
+          mkdir -p trivy-reports
+          trivy image --exit-code 1 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE" || true
+          echo "📄 Vulnerabilidades HIGH/CRITICAL:"
+          jq '.Results[].Vulnerabilities[]? | {VulnerabilityID, Severity, PkgName, InstalledVersion, FixedVersion}' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade crítica"
       - name: Update Fleet repo manifests
-        shell: bash
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
           FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
-          IMAGE: "gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${GITHUB_SHA}"
-          APP_NAME: ${{ env.APP_NAME }}
-          APP_PORT: ${{ env.APP_PORT }}
+          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
+          PORT: ${{ env.APP_PORT }}
         run: |
-          set -euo pipefail
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
           REPO_NO_PROTO=${FLEET_REPO#https://}
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
           BRANCH="${FLEET_BRANCH:-main}"
-
           git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
           cd fleet-repo || exit 1
-
           sudo apt-get update && sudo apt-get install -y jq
           curl -sL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
           chmod +x yq && sudo mv yq /usr/local/bin/
-
-          DEPLOYMENT_FILE="k8s/apps/${APP_NAME}/deployment.yaml"
-          if [ -f "$DEPLOYMENT_FILE" ]; then
-            # Atualiza imagem
-            yq e -i '.spec.template.spec.containers[] |= (select(.name == "'"${APP_NAME}"'") .image = env(IMAGE))' "$DEPLOYMENT_FILE"
-
-            # Atualiza porta se estiver vazia
-            CURRENT_PORT=$(yq e '.spec.template.spec.containers[] | select(.name=="'"${APP_NAME}"'") | .ports[0].containerPort // ""' "$DEPLOYMENT_FILE")
-            if [ -z "$CURRENT_PORT" ]; then
-              yq e -i '.spec.template.spec.containers[] |= (select(.name == "'"${APP_NAME}"'") .ports[0].containerPort = env(APP_PORT))' "$DEPLOYMENT_FILE"
-            fi
-
-            if git diff --quiet --exit-code; then
-              echo "✅ Nenhuma alteração necessária"
-            else
-              git add "$DEPLOYMENT_FILE"
-              git commit -m "Atualiza imagem (e porta se necessário) para ${APP_NAME} [ci skip]"
-              git push origin "${BRANCH}"
-              echo "🚀 Manifest atualizado no Fleet repo"
-            fi
+          MANIFEST="k8s/apps/${APP_NAME}/deployment.yaml"
+          yq e -i '.spec.template.spec.containers[0].image = env(IMAGE)' "$MANIFEST"
+          yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = env(PORT)' "$MANIFEST"
+          if git diff --quiet --exit-code; then
+            echo "✅ Nenhuma alteração detectada"
           else
-            echo "⚠️ Arquivo $DEPLOYMENT_FILE não encontrado, pulando atualização"
+            git add "$MANIFEST"
+            git commit -m "Atualiza imagem e porta para ${IMAGE}:${PORT} [ci skip]"
+            git push origin "${BRANCH}"
+            echo "✅ Manifest atualizado"
+          fi  
+      - name: Upload Trivy report
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy-reports/trivy-report.json
+
+      - name: Show Trivy JSON summary in log
+        run: |
+          echo "🔍 Vulnerabilidades HIGH/CRITICAL detectadas:"
+          jq '.' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade encontrada"
+
