@@ -11,14 +11,14 @@ jobs:
     env:
       APP_NAME: "app-teste-2"
       APP_PORT: 9100
-      TRIVY_FAIL_ON: "true"  # "false" se não quiser quebrar a pipeline
+      TRIVY_FAIL_ON: "true"
 
     steps:
       # 1️⃣ Checkout do repositório
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Configura QEMU (para build multiplataforma)
+      # 2️⃣ Configura QEMU
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
 
@@ -38,7 +38,7 @@ jobs:
       - name: Set short SHA
         run: echo "SHORT_SHA=${GITHUB_SHA}" >> $GITHUB_ENV
 
-      # 6️⃣ Build e push da imagem (se ainda não existir)
+      # 6️⃣ Build e push da imagem
       - name: Build and push image if not exists
         run: |
           set -euo pipefail
@@ -49,7 +49,6 @@ jobs:
           else
             echo "📦 Buildando e pushando $IMAGE..."
             docker buildx build --platform linux/amd64,linux/arm64 -t "$IMAGE" --push .
-          fi
 
       # 7️⃣ Scan com Trivy
       - name: Scan image with Trivy
@@ -124,20 +123,25 @@ jobs:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
           FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
-          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${SHORT_SHA}
+          IMAGE: "gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${SHORT_SHA}"
           PORT: ${{ env.APP_PORT }}
         run: |
           set -euo pipefail
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
           REPO_NO_PROTO=${FLEET_REPO#https://}
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
           BRANCH="${FLEET_BRANCH:-main}"
           git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
           cd fleet-repo || exit 1
+
           MANIFEST="k8s/apps/${APP_NAME}/deployment.yaml"
-          yq e -i '.spec.template.spec.containers[0].image = env(IMAGE)' "$MANIFEST"
+
+          # Atualiza o campo image com o nome completo da imagem
+          yq e -i '.spec.template.spec.containers[0].image = strenv(IMAGE)' "$MANIFEST"
           yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = env(PORT)' "$MANIFEST"
+
           if git diff --quiet --exit-code; then
             echo "✅ Nenhuma atualização necessária"
           else
