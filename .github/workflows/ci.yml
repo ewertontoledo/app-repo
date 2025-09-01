@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       APP_NAME: "app-teste-2"
+
     steps:
       # 1️⃣ Checkout do repositório
       - name: Checkout
@@ -41,6 +42,7 @@ jobs:
             echo "📦 Imagem não encontrada, buildando e pushando..."
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
+          fi
 
       # 5️⃣ Escaneamento com Trivy
       - name: Scan image with Trivy
@@ -52,6 +54,7 @@ jobs:
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh
 
           mkdir -p trivy-reports
+          # gera relatório JSON (não falha o workflow se encontrar vulnerabilidades)
           trivy image --exit-code 1 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE" || true
 
           echo "📄 Resumo das vulnerabilidades HIGH e CRITICAL:"
