@@ -8,11 +8,11 @@ RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 WORKDIR /app
 
 # Copia arquivos de configuração do Node
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json* ./
 
 # Atualiza npm e instala dependências de produção
 RUN npm install -g npm@9 \
-    && npm ci --omit=dev \
+    && npm install --production \
     && npm cache clean --force
 
 # Copia o restante do código da aplicação
