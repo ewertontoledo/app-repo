@@ -45,6 +45,7 @@ jobs:
           else
             echo "📦 Buildando e pushando $IMAGE..."
             docker buildx build --platform linux/amd64,linux/arm64 -t "$IMAGE" --push .
+          fi
 
       # 6️⃣ Scan com Trivy
       - name: Scan image with Trivy
@@ -57,6 +58,8 @@ jobs:
           sudo mv trivy /usr/local/bin/
           mkdir -p trivy-reports
           trivy image --exit-code 0 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE"
+          # Gera ZIP do relatório
+          zip -r trivy-reports.zip trivy-reports
 
       # 7️⃣ Gerar JSON de sugestões de upgrade
       - name: Generate upgrade suggestions JSON
@@ -85,7 +88,8 @@ jobs:
             echo "❌ Encontradas $COUNT vulnerabilidades HIGH/CRITICAL"
             exit 1
           else
-            echo "✅ Nenhuma vulnerabilidade HIGH/CRITICAL encontrada"
+            echo "✅ Nenhuma vulnerabilidade HIGH/CRITICAL encontrada
+          fi
 
       # 9️⃣ Upload dos relatórios Trivy
       - name: Upload Trivy reports
@@ -94,13 +98,19 @@ jobs:
         with:
           name: trivy-reports
           path: trivy-reports/
+      - name: Upload Trivy reports ZIP
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-reports-zip
+          path: trivy-reports.zip
 
       # 🔟 Instala jq e yq (antes do update do Fleet repo)
       - name: Install jq and yq
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y jq
+          sudo apt-get install -y jq zip
           curl -sL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
           chmod +x yq
           sudo mv yq /usr/local/bin/
