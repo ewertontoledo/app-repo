@@ -13,4 +13,3 @@ app.listen(port, "0.0.0.0", () => {
   console.log(`✅ App-teste-3 rodando na porta ${port}`);
   console.log(`➡️ Acesse pelo Nginx reverse proxy: http://stage-smart.surf.com.br/teste-3`);
 });
-
