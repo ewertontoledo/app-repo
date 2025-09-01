@@ -50,7 +50,7 @@ jobs:
           tar zxvf trivy.tar.gz
           sudo mv trivy /usr/local/bin/
           mkdir -p trivy-reports
-
+          # Sempre gera JSON, não quebra pipeline
           trivy image --exit-code 0 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE"
 
       - name: Generate upgrade suggestions JSON
@@ -70,10 +70,10 @@ jobs:
         if: env.TRIVY_FAIL_ON == 'true'
         run: |
           COUNT=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' trivy-reports/trivy-report.json)
+          echo "📄 Relatório completo de vulnerabilidades (mesmo se pipeline quebrar):"
+          jq '.' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade crítica"
           if [ "$COUNT" -gt 0 ]; then
             echo "❌ Encontradas $COUNT vulnerabilidades HIGH/CRITICAL"
-            echo "📄 Relatório completo de vulnerabilidades:"
-            jq '.' trivy-reports/trivy-report.json
             exit 1
           else
             echo "✅ Nenhuma vulnerabilidade HIGH/CRITICAL encontrada"
