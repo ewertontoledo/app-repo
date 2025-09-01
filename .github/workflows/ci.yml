@@ -9,7 +9,7 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     env:
-      APP_NAME: "app-teste-3"  # <-- alterar manualmente para o app desejado
+      APP_NAME: "app-teste-4"  # <-- alterar manualmente para o app desejado
     steps:
       # 1️⃣ Faz checkout do código do repositório onde está o workflow
       - name: Checkout
@@ -66,7 +66,7 @@ jobs:
           MANIFEST="k8s/apps/${APP_NAME}/deployment.yaml"
           yq e -i '.spec.template.spec.containers[0].image = env(IMAGE)' "$MANIFEST"
           # (Opcional) Atualiza a porta do container
-          # yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = 9100' "$MANIFEST"
+          # yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = 9101' "$MANIFEST"
           # Commit e push apenas se houver alterações
           if git diff --quiet --exit-code; then
             echo "✅ Nenhuma alteração detectada no manifest"
@@ -76,4 +76,3 @@ jobs:
             git push origin "${BRANCH}"
             echo "✅ Manifest atualizado no Fleet repo"
           fi
-          
