@@ -12,21 +12,18 @@ jobs:
       APP_NAME: "app-teste-2"
       APP_PORT: 9100
       TRIVY_FAIL_ON: "true"
+      SHORT_SHA: ${{ github.sha }}
 
     steps:
-      # 1️⃣ Checkout do repositório
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Configura QEMU
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
 
-      # 3️⃣ Configura Buildx
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
-      # 4️⃣ Login no OCIR
       - name: Login to OCIR
         uses: docker/login-action@v2
         with:
@@ -34,15 +31,11 @@ jobs:
           username: ${{ secrets.OCIR_USERNAME }}
           password: ${{ secrets.OCIR_AUTH_TOKEN }}
 
-      # 5️⃣ Define tag curto do commit
-      - name: Set short SHA
-        run: echo "SHORT_SHA=${GITHUB_SHA}" >> $GITHUB_ENV
-
-      # 6️⃣ Build e push da imagem
       - name: Build and push image if not exists
+        env:
+          IMAGE: "${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${SHORT_SHA}"
         run: |
           set -euo pipefail
-          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${SHORT_SHA}"
           echo "🔍 Verificando se a imagem $IMAGE já existe..."
           if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
             echo "✅ Imagem $IMAGE já existe"
@@ -50,11 +43,11 @@ jobs:
             echo "📦 Buildando e pushando $IMAGE..."
             docker buildx build --platform linux/amd64,linux/arm64 -t "$IMAGE" --push .
 
-      # 7️⃣ Scan com Trivy
       - name: Scan image with Trivy
+        env:
+          IMAGE: "${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${SHORT_SHA}"
         run: |
           set -euo pipefail
-          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${SHORT_SHA}"
           echo "🔒 Escaneando $IMAGE com Trivy..."
           curl -sfL https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.65.0_Linux-64bit.tar.gz -o trivy.tar.gz
           tar zxvf trivy.tar.gz
@@ -63,22 +56,15 @@ jobs:
           trivy image --exit-code 0 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE"
           zip -r trivy-reports.zip trivy-reports
 
-      # 8️⃣ Gerar JSON de sugestões de upgrade
       - name: Generate upgrade suggestions JSON
         run: |
           set -euo pipefail
           jq '[.Results[].Vulnerabilities[]? 
                | select(.Severity=="HIGH" or .Severity=="CRITICAL") 
-               | {
-                   package: .PkgName,
-                   current_version: .InstalledVersion,
-                   suggested_fix: .FixedVersion,
-                   severity: .Severity,
-                   cve: .VulnerabilityID
-                 }]' trivy-reports/trivy-report.json > trivy-reports/upgrade-suggestions.json
+               | {package: .PkgName, current_version: .InstalledVersion, suggested_fix: .FixedVersion, severity: .Severity, cve: .VulnerabilityID}]' \
+               trivy-reports/trivy-report.json > trivy-reports/upgrade-suggestions.json
           echo "📄 Arquivo de sugestões gerado em trivy-reports/upgrade-suggestions.json"
 
-      # 9️⃣ Mostrar relatório e falhar se necessário
       - name: Show Trivy JSON and fail if needed
         if: ${{ env.TRIVY_FAIL_ON == 'true' }}
         run: |
@@ -93,13 +79,13 @@ jobs:
             echo "✅ Nenhuma vulnerabilidade HIGH/CRITICAL encontrada"
           fi
 
-      # 🔟 Upload dos relatórios Trivy
       - name: Upload Trivy reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: trivy-reports
           path: trivy-reports/
+
       - name: Upload Trivy reports ZIP
         if: always()
         uses: actions/upload-artifact@v4
@@ -107,7 +93,6 @@ jobs:
           name: trivy-reports-zip
           path: trivy-reports.zip
 
-      # 1️⃣1️⃣ Instala jq e yq
       - name: Install jq and yq
         run: |
           set -euo pipefail
@@ -117,7 +102,6 @@ jobs:
           chmod +x yq
           sudo mv yq /usr/local/bin/
 
-      # 1️⃣2️⃣ Atualiza os manifests no Fleet repo
       - name: Update Fleet repo manifests
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
@@ -138,7 +122,6 @@ jobs:
 
           MANIFEST="k8s/apps/${APP_NAME}/deployment.yaml"
 
-          # Atualiza o campo image com o nome completo da imagem
           yq e -i '.spec.template.spec.containers[0].image = strenv(IMAGE)' "$MANIFEST"
           yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = env(PORT)' "$MANIFEST"
 
