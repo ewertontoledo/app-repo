@@ -53,14 +53,22 @@ jobs:
 
           mkdir -p trivy-reports
 
-          if [[ "${TRIVY_FAIL_ON}" == "true" ]]; then
-            trivy image --exit-code 1 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE"
-          else
-            trivy image --exit-code 0 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE" || true
-          fi
+          # Sempre gera JSON, não quebra o pipeline aqui
+          trivy image --exit-code 0 --severity HIGH,CRITICAL --format json -o trivy-reports/trivy-report.json "$IMAGE"
 
           echo "📄 Vulnerabilidades HIGH/CRITICAL:"
           jq '.Results[].Vulnerabilities[]? | {VulnerabilityID, Severity, PkgName, InstalledVersion, FixedVersion}' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade crítica"
+
+      - name: Fail if HIGH/CRITICAL vulnerabilities found
+        if: env.TRIVY_FAIL_ON == 'true'
+        run: |
+          COUNT=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' trivy-reports/trivy-report.json)
+          if [ "$COUNT" -gt 0 ]; then
+            echo "❌ Encontradas $COUNT vulnerabilidades HIGH/CRITICAL"
+            exit 1
+          else
+            echo "✅ Nenhuma vulnerabilidade HIGH/CRITICAL encontrada"
+          fi
 
       - name: Update Fleet repo manifests
         env:
@@ -88,21 +96,4 @@ jobs:
           yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = env(PORT)' "$MANIFEST"
 
           if git diff --quiet --exit-code; then
-            echo "✅ Nenhuma alteração detectada"
-          else
-            git add "$MANIFEST"
-            git commit -m "Atualiza imagem e porta para ${IMAGE}:${PORT} [ci skip]"
-            git push origin "${BRANCH}"
-            echo "✅ Manifest atualizado"
-          fi  
-
-      - name: Upload Trivy report
-        uses: actions/upload-artifact@v4
-        with:
-          name: trivy-report
-          path: trivy-reports/trivy-report.json
-
-      - name: Show Trivy JSON summary in log
-        run: |
-          echo "🔍 Vulnerabilidades HIGH/CRITICAL detectadas:"
-          jq '.' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade encontrada"
+            echo "✅ Ne
