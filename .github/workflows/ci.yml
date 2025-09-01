@@ -12,7 +12,6 @@ jobs:
       APP_NAME: "app-teste-2"
       APP_PORT: 9100
       TRIVY_FAIL_ON: "true"
-      IMAGE_TAG: ${{ secrets.APP_IMAGE_TAG }} # exemplo: 977c2abc6e898c8f47111a30c9e77a7f1116127b
 
     steps:
       # 1️⃣ Checkout repository
@@ -37,10 +36,7 @@ jobs:
       - name: Build and push image if not exists
         run: |
           set -euo pipefail
-          TAG="${IMAGE_TAG}"
-          if [ -z "$TAG" ]; then
-            TAG="latest"
-          fi
+          TAG="${GITHUB_SHA}"  # ou "latest" se quiser
           IMAGE="gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${TAG}"
           echo "🔍 Verificando se a imagem $IMAGE já existe..."
           if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
@@ -51,13 +47,12 @@ jobs:
 
       # 5️⃣ Scan Trivy
       - name: Scan image with Trivy
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: "gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${IMAGE_TAG}"
-          format: json
-          output: trivy-reports/trivy-report.json
-          severity: HIGH,CRITICAL
-          exit-code: 0
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_SHA}"  # mesma tag do build
+          IMAGE="gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${TAG}"
+          mkdir -p trivy-reports
+          docker run --rm -v $(pwd)/trivy-reports:/report aquasec/trivy:latest image --exit-code 0 --severity HIGH,CRITICAL --format json -o /report/trivy-report.json "$IMAGE"
 
       - name: Zip Trivy reports
         run: zip -r trivy-reports.zip trivy-reports
@@ -96,7 +91,7 @@ jobs:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
           FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
-          IMAGE: "gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${IMAGE_TAG}"
+          IMAGE: "gru.ocir.io/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${GITHUB_SHA}"
           APP_NAME: ${{ env.APP_NAME }}
           APP_PORT: ${{ env.APP_PORT }}
         run: |
