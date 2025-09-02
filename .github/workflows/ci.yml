@@ -79,7 +79,7 @@ jobs:
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: |
           if [ -n "$TEAMS_WEBHOOK_URL" ]; then
-            PAYLOAD="{\"text\": \"⚠️ Pipeline falhou no Trivy para o app ${{ env.APP_NAME }}. Verifique o relatório.\"}"
+            PAYLOAD="{\"text\": \"⚠️ A pipeline de CI/CD falhou durante a verificação de vulnerabilidades (Trivy) para o aplicativo '${{ env.APP_NAME }}'. O deploy não foi realizado. Verifique o relatório de vulnerabilidades para mais detalhes.\"}"
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
           fi
       # --- ATUALIZAÇÃO DO MANIFEST APENAS SE O TRIVY PASSAR ---
