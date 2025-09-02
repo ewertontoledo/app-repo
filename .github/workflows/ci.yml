@@ -40,7 +40,7 @@ jobs:
             echo "📦 Buildando e pushando $IMAGE..."
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
-          fi
+
       # --- TRIVY ANTES DO MANIFEST ---
       - name: Scan image with Trivy
         id: trivy
@@ -52,26 +52,42 @@ jobs:
           tar zxvf trivy.tar.gz
           sudo mv trivy /usr/local/bin/
           mkdir -p trivy-reports
+          
           trivy image --exit-code 1 --severity HIGH,CRITICAL \
             --format json -o trivy-reports/trivy-report.json "$IMAGE"
+
           COUNT=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' trivy-reports/trivy-report.json)
           echo "Vulnerabilidades HIGH/CRITICAL encontradas: $COUNT"
+
           if [ "$COUNT" -gt 0 ]; then
             echo "🚨 Pipeline quebrada devido a vulnerabilidades HIGH/CRITICAL"
             exit 1
           fi
-      - name: Upload Trivy report
+
+      # --- Upload artefatos ---
+      - name: Upload Trivy report JSON
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: trivy-report
           path: trivy-reports/trivy-report.json
 
+      - name: Upload Trivy report ZIP
+        if: always()
+        run: |
+          cd trivy-reports
+          zip -r trivy-report.zip .
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report-zip
+          path: trivy-reports/trivy-report.zip
+
       - name: Show Trivy JSON summary in log
         if: always()
         run: |
           echo "🔍 Vulnerabilidades HIGH/CRITICAL detectadas:"
           jq '.' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade encontrada"
+
       # --- Envia notificação para Teams se falhar ---
       - name: Notify Teams on Trivy failure
         if: failure()
@@ -79,9 +95,11 @@ jobs:
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: |
           if [ -n "$TEAMS_WEBHOOK_URL" ]; then
-            PAYLOAD="{\"text\": \"⚠️ A pipeline de CI/CD falhou durante a verificação de vulnerabilidades (Trivy) para o aplicativo '${{ env.APP_NAME }}'. O deploy não foi realizado. Verifique o relatório de vulnerabilidades para mais detalhes.\"}"
+            # Link para download do zip do relatório (artefato GitHub Actions)
+            ZIP_URL="https://github.com/${{ github.repository }}/suites/${{ github.run_id }}/artifacts/${{ github.run_id }}/trivy-report-zip"
+            PAYLOAD="{\"text\": \"⚠️ A pipeline de CI/CD falhou durante a verificação de vulnerabilidades (Trivy) para o aplicativo '${{ env.APP_NAME }}'. O deploy não foi realizado. [Baixar relatório Trivy](${ZIP_URL})\"}"
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
-          fi
+
       # --- ATUALIZAÇÃO DO MANIFEST APENAS SE O TRIVY PASSAR ---
       - name: Update Fleet repo manifests
         if: success()
@@ -94,18 +112,22 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
+
           REPO_NO_PROTO=${FLEET_REPO#https://}
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
           BRANCH="${FLEET_BRANCH:-main}"
+
           git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
           cd fleet-repo || exit 1
+
           sudo apt-get update && sudo apt-get install -y jq
           curl -sL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
           chmod +x yq && sudo mv yq /usr/local/bin/
+
           MANIFEST="k8s/apps/${APP_NAME}/deployment.yaml"
           yq e -i '.spec.template.spec.containers[0].image = env(IMAGE)' "$MANIFEST"
           yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = env(PORT)' "$MANIFEST"
+
           if git diff --quiet --exit-code; then
             echo "✅ Nenhuma alteração detectada"
           else
@@ -113,4 +135,3 @@ jobs:
             git commit -m "Atualiza imagem e porta para ${IMAGE}:${PORT} [ci skip]"
             git push origin "${BRANCH}"
             echo "✅ Manifest atualizado"
-          fi
