@@ -51,8 +51,8 @@ jobs:
           curl -sfL https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.65.0_Linux-64bit.tar.gz -o trivy.tar.gz
           tar zxvf trivy.tar.gz
           sudo mv trivy /usr/local/bin/
+
           mkdir -p trivy-reports
-          
           trivy image --exit-code 1 --severity HIGH,CRITICAL \
             --format json -o trivy-reports/trivy-report.json "$IMAGE"
 
@@ -64,19 +64,22 @@ jobs:
             exit 1
           fi
 
-      # --- Upload artefatos ---
-      - name: Upload Trivy report JSON
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: trivy-report
-          path: trivy-reports/trivy-report.json
-
-      - name: Upload Trivy report ZIP
+      - name: Create Trivy ZIP
         if: always()
         run: |
           cd trivy-reports
           zip -r trivy-report.zip .
+          cd ..
+
+      - name: Upload Trivy report JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report-json
+          path: trivy-reports/trivy-report.json
+
+      - name: Upload Trivy report ZIP
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: trivy-report-zip
@@ -95,10 +98,10 @@ jobs:
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: |
           if [ -n "$TEAMS_WEBHOOK_URL" ]; then
-            # Link para download do zip do relatório (artefato GitHub Actions)
-            ZIP_URL="https://github.com/${{ github.repository }}/suites/${{ github.run_id }}/artifacts/${{ github.run_id }}/trivy-report-zip"
-            PAYLOAD="{\"text\": \"⚠️ A pipeline de CI/CD falhou durante a verificação de vulnerabilidades (Trivy) para o aplicativo '${{ env.APP_NAME }}'. O deploy não foi realizado. [Baixar relatório Trivy](${ZIP_URL})\"}"
+            REPORT_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts"
+            PAYLOAD="{\"text\": \"⚠️ A pipeline de CI/CD falhou durante a verificação de vulnerabilidades (Trivy) para o aplicativo '${{ env.APP_NAME }}'. O deploy não foi realizado.\n📄 Relatório de vulnerabilidades: $REPORT_URL\"}"
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
+          fi
 
       # --- ATUALIZAÇÃO DO MANIFEST APENAS SE O TRIVY PASSAR ---
       - name: Update Fleet repo manifests
@@ -112,22 +115,18 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
+          
           REPO_NO_PROTO=${FLEET_REPO#https://}
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
           BRANCH="${FLEET_BRANCH:-main}"
-
           git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
           cd fleet-repo || exit 1
-
           sudo apt-get update && sudo apt-get install -y jq
           curl -sL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
           chmod +x yq && sudo mv yq /usr/local/bin/
-
           MANIFEST="k8s/apps/${APP_NAME}/deployment.yaml"
           yq e -i '.spec.template.spec.containers[0].image = env(IMAGE)' "$MANIFEST"
           yq e -i '.spec.template.spec.containers[0].ports[0].containerPort = env(PORT)' "$MANIFEST"
-
           if git diff --quiet --exit-code; then
             echo "✅ Nenhuma alteração detectada"
           else
@@ -135,3 +134,4 @@ jobs:
             git commit -m "Atualiza imagem e porta para ${IMAGE}:${PORT} [ci skip]"
             git push origin "${BRANCH}"
             echo "✅ Manifest atualizado"
+          fi
