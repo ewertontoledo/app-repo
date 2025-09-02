@@ -2,7 +2,7 @@ const express = require("express");
 const app = express();
 
 app.get("/", (req, res) => {
-  res.send("🚀 Imagem docker corrigida");
+  res.send("🚀 Atualização de versão do nodeJS");
 });
 
 // Porta definida via variável de ambiente ou fallback para 9000
