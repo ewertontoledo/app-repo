@@ -1,5 +1,5 @@
 # --- Base image ---
-FROM node:16.14-alpine
+FROM node:18-alpine
 
 # --- Criar usuário não-root ---
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
