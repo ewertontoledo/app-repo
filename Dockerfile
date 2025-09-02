@@ -1,27 +1,29 @@
-# 🚨 Imagem vulnerável propositalmente
-FROM node:10
+# --- Base image ---
+FROM node:18-alpine
 
-# Cria usuário não-root
-RUN addgroup appgroup && useradd -M -g appgroup appuser
+# --- Criar usuário não-root ---
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
-# Diretório de trabalho
+# --- Diretório de trabalho ---
 WORKDIR /app
 
-# Copia arquivos de configuração do Node
+# --- Copiar apenas arquivos de dependências primeiro ---
 COPY package.json package-lock.json* ./
 
-# Instala dependências (npm antigo com CVEs conhecidos)
-RUN npm install --production \
+# --- Atualizar npm e instalar dependências de produção ---
+RUN npm install -g npm@9 \
+    && npm install --production \
     && npm cache clean --force
 
-# Copia o restante do código da aplicação
+# --- Copiar o restante do código da aplicação ---
 COPY . .
 
-# Altera para usuário não-root
+# --- Alterar para usuário não-root ---
 USER appuser
 
-# Porta da aplicação
+# --- Expor porta da aplicação ---
 EXPOSE 9000
 
-# Comando para iniciar a aplicação
+# --- Comando de inicialização ---
 CMD ["node", "src/index.js"]
+
