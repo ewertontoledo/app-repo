@@ -142,3 +142,4 @@ jobs:
             git commit -m "Atualiza imagem e porta para ${IMAGE}:${PORT} [ci skip]"
             git push origin "${BRANCH}"
             echo "✅ Manifest atualizado"
+          fi
