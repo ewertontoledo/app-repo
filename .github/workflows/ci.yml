@@ -45,10 +45,16 @@ jobs:
             docker push "$IMAGE"
           fi
 
-      # --- Trivy Scan com CLI ---
+      # --- Criar diretório para relatório Trivy ---
       - name: Criar diretório para relatório Trivy
         run: mkdir -p trivy-reports
 
+      # --- Instalar Trivy CLI ---
+      - name: Install Trivy CLI
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh
+
+      # --- Trivy Scan ---
       - name: Scan image with Trivy CLI
         run: |
           IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
@@ -92,7 +98,7 @@ jobs:
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: |
           if [ -n "$TEAMS_WEBHOOK_URL" ]; then
-            PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${APP_NAME}'. Verifique o relatório.\"}"
+            PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${{ env.APP_NAME }}'. Verifique o relatório.\"}"
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
           fi
 
@@ -103,9 +109,10 @@ jobs:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
           FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
-          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}
+          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
           PORT: ${{ env.APP_PORT }}
         run: |
+          #!/usr/bin/env bash
           set -euo pipefail
 
           git config --global user.name "github-actions[bot]"
