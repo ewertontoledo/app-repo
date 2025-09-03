@@ -53,6 +53,7 @@ jobs:
           mkdir -p $HOME/bin
           mv ./bin/trivy $HOME/bin/
           echo "$HOME/bin" >> $GITHUB_PATH
+          export PATH="$HOME/bin:$PATH"
           trivy --version
 
       # --- Trivy Scan ---
@@ -62,6 +63,7 @@ jobs:
       - name: Scan image with Trivy
         id: trivy
         run: |
+          export PATH="$HOME/bin:$PATH"
           trivy image --severity HIGH,CRITICAL --exit-code 1 \
             --format json -o trivy-reports/trivy-report.json \
             "${IMAGE}"
@@ -96,7 +98,8 @@ jobs:
         if: failure()
         run: |
           if [ -n "$TEAMS_WEBHOOK_URL" ]; then
-            PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${APP_NAME}'. Verifique o relatório.\"}"
+            REPORT_URL="https://github.com/${{ github.repository }}/suites/${{ github.run_id }}/artifacts"
+            PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${APP_NAME}'.\\n🔗 Relatório disponível em: ${REPORT_URL}\"}"
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
           fi
 
