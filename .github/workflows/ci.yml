@@ -36,6 +36,7 @@ jobs:
       - name: Build and push image if not exists
         run: |
           IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
           echo "🔍 Verificando se a imagem já existe..."
           if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
             echo "✅ Imagem $IMAGE já existe"
@@ -48,7 +49,11 @@ jobs:
       # --- Instalar Trivy ---
       - name: Install Trivy
         run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          mkdir -p $HOME/bin
+          mv ./bin/trivy $HOME/bin/
+          echo "$HOME/bin" >> $GITHUB_PATH
+          trivy --version
 
       # --- Trivy Scan ---
       - name: Criar diretório para relatório Trivy
@@ -57,10 +62,9 @@ jobs:
       - name: Scan image with Trivy
         id: trivy
         run: |
-          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}"
           trivy image --severity HIGH,CRITICAL --exit-code 1 \
             --format json -o trivy-reports/trivy-report.json \
-            "$IMAGE"
+            "${IMAGE}"
 
       # --- Mostrar resumo no log ---
       - name: Show Trivy JSON summary in log
@@ -87,14 +91,12 @@ jobs:
           echo "🔗 Para baixar o relatório Trivy (somente para quem tem acesso ao repositório), acesse:"
           echo "https://github.com/${{ github.repository }}/suites/${{ github.run_id }}/artifacts"
 
-      # --- Notificação Teams ---
+      # --- Notificação Teams apenas se falhar ---
       - name: Notify Teams on Trivy failure
         if: failure()
-        env:
-          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: |
           if [ -n "$TEAMS_WEBHOOK_URL" ]; then
-            PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${{ env.APP_NAME }}'. Verifique o relatório.\"}"
+            PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${APP_NAME}'. Verifique o relatório.\"}"
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
           fi
 
@@ -108,9 +110,7 @@ jobs:
           IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
           PORT: ${{ env.APP_PORT }}
         run: |
-          #!/usr/bin/env bash
           set -euo pipefail
-
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
