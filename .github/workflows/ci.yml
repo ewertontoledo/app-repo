@@ -59,6 +59,7 @@ jobs:
           vuln-type: os,library
           severity: HIGH,CRITICAL
           ignore-unfixed: false
+          fail-on: HIGH,CRITICAL
 
       # --- Mostrar resumo no log ---
       - name: Show Trivy JSON summary in log
@@ -107,7 +108,7 @@ jobs:
           PORT: ${{ env.APP_PORT }}
         run: |
           #!/usr/bin/env bash
-          set -e
+          set -euo pipefail
 
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
@@ -119,9 +120,12 @@ jobs:
           git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
           cd fleet-repo
 
-          sudo apt-get update -qq && sudo apt-get install -y -qq jq
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq
+
           curl -sSL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
-          chmod +x yq && sudo mv yq /usr/local/bin/
+          chmod +x yq
+          sudo mv yq /usr/local/bin/
 
           MANIFEST="k8s/apps/${APP_NAME}/deployment.yaml"
           yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$MANIFEST"
