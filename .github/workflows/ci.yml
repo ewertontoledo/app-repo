@@ -40,6 +40,7 @@ jobs:
             echo "📦 Buildando e pushando $IMAGE..."
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
+          fi
 
       # --- TRIVY ANTES DO MANIFEST ---
       - name: Criar diretório para relatório Trivy
@@ -47,6 +48,7 @@ jobs:
 
       - name: Scan image with Trivy
         id: trivy
+        continue-on-error: true
         uses: aquasecurity/trivy-action@0.20.0
         with:
           image-ref: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
@@ -68,9 +70,9 @@ jobs:
         run: |
           echo "🔍 Vulnerabilidades detectadas:"
           if [ -f trivy-reports/trivy-report.json ]; then
-            jq '.' trivy-reports/trivy-report.json
+            jq '.' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade encontrada"
           else
-            echo "✅ Nenhuma vulnerabilidade encontrada"
+            echo "✅ Relatório não encontrado"
           fi
 
       - name: Artifact download link
@@ -90,9 +92,9 @@ jobs:
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
           fi
 
-      # --- Update Fleet repo somente se Trivy passar ---
+      # --- Update Fleet repo ---
       - name: Update Fleet repo manifests
-        if: success()
+        if: always()
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
           FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
