@@ -45,44 +45,26 @@ jobs:
             docker push "$IMAGE"
           fi
 
-      # --- Trivy Scan ---
+      # --- Trivy Scan com CLI ---
       - name: Criar diretório para relatório Trivy
         run: mkdir -p trivy-reports
 
-      - name: Scan image with Trivy
-        id: trivy
-        uses: aquasecurity/trivy-action@0.20.0
-        with:
-          image-ref: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
-          format: json
-          output: trivy-reports/trivy-report.json
-          vuln-type: os,library
-          severity: HIGH,CRITICAL
-          ignore-unfixed: false
-
-      # --- Fail if HIGH/CRITICAL vulnerabilities found ---
-      - name: Fail if HIGH/CRITICAL vulnerabilities found
-        if: always()
+      - name: Scan image with Trivy CLI
         run: |
-          if [ -f trivy-reports/trivy-report.json ]; then
-            count=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' trivy-reports/trivy-report.json)
-            echo "🔍 Total de vulnerabilidades HIGH/CRITICAL: $count"
-            if [ "$count" -gt 0 ]; then
-              echo "❌ Vulnerabilidades HIGH/CRITICAL encontradas, quebrando pipeline!"
-              exit 1
-            else
-              echo "✅ Nenhuma vulnerabilidade HIGH/CRITICAL encontrada"
-            fi
-          else
-            echo "⚠️ Relatório Trivy não encontrado"
-            exit 1
-          fi
+          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
+          echo "🔍 Iniciando scan Trivy em $IMAGE..."
+          trivy image \
+            --format json \
+            --output trivy-reports/trivy-report.json \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            "$IMAGE"
 
       # --- Mostrar resumo no log ---
       - name: Show Trivy JSON summary in log
         if: always()
         run: |
-          echo "🔍 Resumo das vulnerabilidades:"
+          echo "🔍 Resumo das vulnerabilidades HIGH/CRITICAL:"
           if [ -f trivy-reports/trivy-report.json ]; then
             jq '.Results[]?.Vulnerabilities[]? | {PkgName, InstalledVersion, Severity, Title}' trivy-reports/trivy-report.json
           else
@@ -110,7 +92,7 @@ jobs:
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: |
           if [ -n "$TEAMS_WEBHOOK_URL" ]; then
-            PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${{ env.APP_NAME }}'. Verifique o relatório.\"}"
+            PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${APP_NAME}'. Verifique o relatório.\"}"
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
           fi
 
@@ -121,10 +103,11 @@ jobs:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
           FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
-          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
+          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}
           PORT: ${{ env.APP_PORT }}
         run: |
           set -euo pipefail
+
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
