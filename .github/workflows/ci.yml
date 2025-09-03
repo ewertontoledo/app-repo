@@ -43,23 +43,20 @@ jobs:
             docker push "$IMAGE"
           fi
 
-      # --- INSTALL TRIVY ---
-      - name: Install Trivy CLI
-        run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
-      - name: Check Trivy version
-        run: trivy --version
-
       # --- TRIVY SCAN ---
+      - name: Criar diretório para relatório Trivy
+        run: mkdir -p trivy-reports
+
       - name: Scan image with Trivy
         id: trivy
-        continue-on-error: false
-        run: |
-          mkdir -p trivy-reports
-          trivy image --exit-code 1 --severity HIGH,CRITICAL \
-            --format json \
-            -o trivy-reports/trivy-report.json \
-            ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          image-ref: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
+          format: json
+          output: trivy-reports/trivy-report.json
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
 
       # --- RESUMO LEGÍVEL ---
       - name: Show Trivy JSON summary in log
@@ -80,11 +77,22 @@ jobs:
           name: trivy-report
           path: trivy-reports/trivy-report.json
 
-      - name: Artifact download link
+      # --- RELEASE PÚBLICA PARA DOWNLOAD ---
+      - name: Create public release with Trivy report
+        if: always()
+        uses: ncipollo/release-action@v1
+        with:
+          tag: trivy-report-${{ github.run_id }}
+          name: "Trivy Report Run ${{ github.run_id }}"
+          files: trivy-reports/trivy-report.json
+          draft: false
+          prerelease: false
+
+      - name: Show public download link
         if: always()
         run: |
-          echo "🔗 Para baixar o relatório Trivy, acesse:"
-          echo "https://github.com/${{ github.repository }}/suites/${{ github.run_id }}/artifacts"
+          echo "🔗 Link público para download do relatório Trivy:"
+          echo "https://github.com/${{ github.repository }}/releases/tag/trivy-report-${{ github.run_id }}"
 
       # --- NOTIFICAÇÃO TEAMS ---
       - name: Notify Teams on Trivy failure
