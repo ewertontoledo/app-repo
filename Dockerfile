@@ -1,5 +1,5 @@
 # --- Base image ---
-FROM node:18-alpine
+FROM node:16-alpine
 
 # --- Criar usuário não-root ---
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
@@ -26,4 +26,3 @@ EXPOSE 9000
 
 # --- Comando de inicialização ---
 CMD ["node", "src/index.js"]
-

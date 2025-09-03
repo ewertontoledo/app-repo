@@ -11,7 +11,7 @@ jobs:
     env:
       APP_NAME: "app-teste-2"
       APP_PORT: 9000
-      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }} # opcional para notificação
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
 
     steps:
       - name: Checkout
@@ -40,9 +40,11 @@ jobs:
             echo "📦 Buildando e pushando $IMAGE..."
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
-          fi
 
       # --- TRIVY ANTES DO MANIFEST ---
+      - name: Criar diretório para relatório Trivy
+        run: mkdir -p trivy-reports
+
       - name: Scan image with Trivy
         id: trivy
         uses: aquasecurity/trivy-action@0.20.0
@@ -65,7 +67,17 @@ jobs:
         if: always()
         run: |
           echo "🔍 Vulnerabilidades detectadas:"
-          jq '.' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade encontrada"
+          if [ -f trivy-reports/trivy-report.json ]; then
+            jq '.' trivy-reports/trivy-report.json
+          else
+            echo "✅ Nenhuma vulnerabilidade encontrada"
+          fi
+
+      - name: Artifact download link
+        if: always()
+        run: |
+          echo "🔗 Para baixar o relatório Trivy, acesse:"
+          echo "https://github.com/${{ github.repository }}/suites/${{ github.run_id }}/artifacts"
 
       # --- Notificação Teams em caso de falha ---
       - name: Notify Teams on Trivy failure
@@ -112,4 +124,3 @@ jobs:
             git commit -m "Atualiza imagem e porta para ${IMAGE}:${PORT} [ci skip]"
             git push origin "${BRANCH}"
             echo "✅ Manifest atualizado"
-          fi
