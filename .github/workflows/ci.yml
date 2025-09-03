@@ -42,11 +42,12 @@ jobs:
             docker push "$IMAGE"
           fi
 
-      # --- TRIVY SCAN via CLI ---
-      - name: Install Trivy
+      # --- INSTALAÇÃO TRIVY ---
+      - name: Install Trivy CLI
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
 
+      # --- TRIVY SCAN ---
       - name: Scan image with Trivy (break on HIGH/CRITICAL)
         id: trivy
         run: |
@@ -56,7 +57,7 @@ jobs:
             -o trivy-reports/trivy-report.json \
             ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
 
-      # --- Resumo legível no log ---
+      # --- RESUMO LEGÍVEL ---
       - name: Show Trivy JSON summary in log
         if: always()
         run: |
@@ -67,7 +68,7 @@ jobs:
             echo "✅ Relatório não encontrado"
           fi
 
-      # --- Upload Artifact interno ---
+      # --- UPLOAD ARTIFACT ---
       - name: Upload Trivy report (artifact interno)
         if: always()
         uses: actions/upload-artifact@v4
@@ -81,7 +82,7 @@ jobs:
           echo "🔗 Para baixar o relatório Trivy, acesse:"
           echo "https://github.com/${{ github.repository }}/suites/${{ github.run_id }}/artifacts"
 
-      # --- Verifica se relatório existe para Release público ---
+      # --- CHECK TRIVY REPORT EXISTS PARA RELEASE PÚBLICO ---
       - name: Check Trivy report exists
         id: check_trivy
         run: |
@@ -101,7 +102,7 @@ jobs:
           draft: false
           prerelease: false
 
-      # --- Notificação Teams em caso de falha ---
+      # --- NOTIFICAÇÃO TEAMS ---
       - name: Notify Teams on Trivy failure
         if: failure()
         env:
@@ -110,8 +111,9 @@ jobs:
           if [ -n "$TEAMS_WEBHOOK_URL" ]; then
             PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${{ env.APP_NAME }}'. Verifique o relatório.\"}"
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
+          fi
 
-      # --- Update Fleet repo ---
+      # --- UPDATE FLEET REPO ---
       - name: Update Fleet repo manifests
         if: success()
         env:
