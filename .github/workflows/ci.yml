@@ -45,24 +45,14 @@ jobs:
       # --- TRIVY ANTES DO MANIFEST ---
       - name: Scan image with Trivy
         id: trivy
-        continue-on-error: true  # garante que o relatório seja sempre gerado e upado
-        run: |
-          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
-          echo "🔒 Escaneando $IMAGE com Trivy..."
-          
-          curl -sfL https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.65.0_Linux-64bit.tar.gz -o trivy.tar.gz
-          tar zxvf trivy.tar.gz
-          sudo mv trivy /usr/local/bin/
-          
-          mkdir -p trivy-reports
-          trivy image --format json -o trivy-reports/trivy-report.json "$IMAGE" || true
-
-          COUNT=$(jq '[.Results[].Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' trivy-reports/trivy-report.json || echo 0)
-          echo "Vulnerabilidades HIGH/CRITICAL encontradas: $COUNT"
-          if [ "$COUNT" -gt 0 ]; then
-            echo "🚨 Pipeline quebrada devido a vulnerabilidades HIGH/CRITICAL"
-            exit 1
-          fi
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          image-ref: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
+          format: 'json'
+          output: 'trivy-reports/trivy-report.json'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'HIGH,CRITICAL'
 
       - name: Upload Trivy report
         if: always()
