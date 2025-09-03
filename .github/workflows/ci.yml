@@ -30,6 +30,7 @@ jobs:
           username: ${{ secrets.OCIR_USERNAME }}
           password: ${{ secrets.OCIR_AUTH_TOKEN }}
 
+      # --- BUILD IMAGE ---
       - name: Build and push image if not exists
         run: |
           IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
@@ -42,14 +43,17 @@ jobs:
             docker push "$IMAGE"
           fi
 
-      # --- INSTALAÇÃO TRIVY ---
+      # --- INSTALL TRIVY ---
       - name: Install Trivy CLI
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+      - name: Check Trivy version
+        run: trivy --version
 
       # --- TRIVY SCAN ---
-      - name: Scan image with Trivy (break on HIGH/CRITICAL)
+      - name: Scan image with Trivy
         id: trivy
+        continue-on-error: false
         run: |
           mkdir -p trivy-reports
           trivy image --exit-code 1 --severity HIGH,CRITICAL \
@@ -69,38 +73,18 @@ jobs:
           fi
 
       # --- UPLOAD ARTIFACT ---
-      - name: Upload Trivy report (artifact interno)
+      - name: Upload Trivy report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: trivy-report
           path: trivy-reports/trivy-report.json
 
-      - name: Artifact download link (interno)
+      - name: Artifact download link
         if: always()
         run: |
           echo "🔗 Para baixar o relatório Trivy, acesse:"
           echo "https://github.com/${{ github.repository }}/suites/${{ github.run_id }}/artifacts"
-
-      # --- CHECK TRIVY REPORT EXISTS PARA RELEASE PÚBLICO ---
-      - name: Check Trivy report exists
-        id: check_trivy
-        run: |
-          if [ -f trivy-reports/trivy-report.json ]; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Public Trivy report via GitHub Release
-        if: steps.check_trivy.outputs.exists == 'true'
-        uses: ncipollo/release-action@v1
-        with:
-          tag: "trivy-report-${{ github.run_number }}"
-          name: "Trivy Report #${{ github.run_number }}"
-          files: trivy-reports/trivy-report.json
-          draft: false
-          prerelease: false
 
       # --- NOTIFICAÇÃO TEAMS ---
       - name: Notify Teams on Trivy failure
