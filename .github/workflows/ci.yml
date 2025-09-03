@@ -48,13 +48,13 @@ jobs:
 
       - name: Scan image with Trivy
         id: trivy
-        continue-on-error: true
+        continue-on-error: false
         uses: aquasecurity/trivy-action@0.20.0
         with:
           image-ref: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
           format: 'json'
           output: 'trivy-reports/trivy-report.json'
-          ignore-unfixed: true
+          ignore-unfixed: false
           vuln-type: 'os,library'
           severity: 'HIGH,CRITICAL'
 
@@ -68,6 +68,7 @@ jobs:
       - name: Show Trivy JSON summary in log
         if: always()
         run: |
+          mkdir -p trivy-reports
           echo "🔍 Vulnerabilidades detectadas:"
           if [ -f trivy-reports/trivy-report.json ]; then
             jq '.' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade encontrada"
@@ -94,7 +95,7 @@ jobs:
 
       # --- Update Fleet repo ---
       - name: Update Fleet repo manifests
-        if: always()
+        if: success()
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
           FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
@@ -111,8 +112,8 @@ jobs:
           git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
           cd fleet-repo || exit 1
 
-          sudo apt-get update && sudo apt-get install -y jq
-          curl -sL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq
+          curl -sSL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
           chmod +x yq && sudo mv yq /usr/local/bin/
 
           MANIFEST="k8s/apps/${APP_NAME}/deployment.yaml"
