@@ -59,7 +59,6 @@ jobs:
           vuln-type: os,library
           severity: HIGH,CRITICAL
           ignore-unfixed: false
-          fail-on: HIGH,CRITICAL
 
       # --- Mostrar resumo no log ---
       - name: Show Trivy JSON summary in log
@@ -70,6 +69,22 @@ jobs:
             jq '.Results[]?.Vulnerabilities[]? | {PkgName, InstalledVersion, Severity, Title}' trivy-reports/trivy-report.json
           else
             echo "✅ Relatório não encontrado"
+          fi
+
+      # --- Quebrar pipeline se houver vulnerabilidades HIGH/CRITICAL ---
+      - name: Fail on HIGH/CRITICAL vulnerabilities
+        if: always()
+        run: |
+          REPORT="trivy-reports/trivy-report.json"
+          if [ -f "$REPORT" ]; then
+            COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' "$REPORT")
+            echo "🔍 Vulnerabilidades HIGH/CRITICAL detectadas: $COUNT"
+            if [ "$COUNT" -gt 0 ]; then
+              echo "❌ Pipeline falhou devido a vulnerabilidades HIGH/CRITICAL"
+              exit 1
+            fi
+          else
+            echo "✅ Relatório Trivy não encontrado, ignorando"
           fi
 
       # --- Upload Artifact ---
@@ -107,7 +122,6 @@ jobs:
           IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
           PORT: ${{ env.APP_PORT }}
         run: |
-          #!/usr/bin/env bash
           set -euo pipefail
 
           git config --global user.name "github-actions[bot]"
@@ -121,7 +135,7 @@ jobs:
           cd fleet-repo
 
           sudo apt-get update -qq
-          sudo apt-get install -y -qq jq curl
+          sudo apt-get install -y -qq jq
 
           curl -sSL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
           chmod +x yq
