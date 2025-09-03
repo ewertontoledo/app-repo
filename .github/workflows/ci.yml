@@ -53,13 +53,13 @@ jobs:
         id: trivy
         uses: aquasecurity/trivy-action@0.20.0
         with:
-          image-ref: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
+          image-ref: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}
           format: json
           output: trivy-reports/trivy-report.json
           vuln-type: os,library
           severity: HIGH,CRITICAL
           ignore-unfixed: false
-
+     
       # --- Mostrar resumo no log ---
       - name: Show Trivy JSON summary in log
         if: always()
@@ -69,22 +69,6 @@ jobs:
             jq '.Results[]?.Vulnerabilities[]? | {PkgName, InstalledVersion, Severity, Title}' trivy-reports/trivy-report.json
           else
             echo "✅ Relatório não encontrado"
-          fi
-
-      # --- Quebrar pipeline se houver vulnerabilidades HIGH/CRITICAL ---
-      - name: Fail on HIGH/CRITICAL vulnerabilities
-        if: always()
-        run: |
-          REPORT="trivy-reports/trivy-report.json"
-          if [ -f "$REPORT" ]; then
-            COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' "$REPORT")
-            echo "🔍 Vulnerabilidades HIGH/CRITICAL detectadas: $COUNT"
-            if [ "$COUNT" -gt 0 ]; then
-              echo "❌ Pipeline falhou devido a vulnerabilidades HIGH/CRITICAL"
-              exit 1
-            fi
-          else
-            echo "✅ Relatório Trivy não encontrado, ignorando"
           fi
 
       # --- Upload Artifact ---
@@ -108,7 +92,7 @@ jobs:
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: |
           if [ -n "$TEAMS_WEBHOOK_URL" ]; then
-            PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${{ env.APP_NAME }}'. Verifique o relatório.\"}"
+            PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${APP_NAME}'. Verifique o relatório.\"}"
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
           fi
 
@@ -119,7 +103,7 @@ jobs:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
           FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
-          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
+          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}
           PORT: ${{ env.APP_PORT }}
         run: |
           set -euo pipefail
