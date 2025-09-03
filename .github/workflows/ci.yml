@@ -45,25 +45,21 @@ jobs:
             docker push "$IMAGE"
           fi
 
-      # --- Criar diretório para relatório Trivy ---
-      - name: Criar diretório para relatório Trivy
-        run: mkdir -p trivy-reports
-
-      # --- Instalar Trivy CLI ---
-      - name: Install Trivy CLI
+      # --- Instalar Trivy ---
+      - name: Install Trivy
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh
 
       # --- Trivy Scan ---
-      - name: Scan image with Trivy CLI
+      - name: Criar diretório para relatório Trivy
+        run: mkdir -p trivy-reports
+
+      - name: Scan image with Trivy
+        id: trivy
         run: |
-          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
-          echo "🔍 Iniciando scan Trivy em $IMAGE..."
-          trivy image \
-            --format json \
-            --output trivy-reports/trivy-report.json \
-            --severity HIGH,CRITICAL \
-            --exit-code 1 \
+          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}"
+          trivy image --severity HIGH,CRITICAL --exit-code 1 \
+            --format json -o trivy-reports/trivy-report.json \
             "$IMAGE"
 
       # --- Mostrar resumo no log ---
@@ -72,7 +68,7 @@ jobs:
         run: |
           echo "🔍 Resumo das vulnerabilidades HIGH/CRITICAL:"
           if [ -f trivy-reports/trivy-report.json ]; then
-            jq '.Results[]?.Vulnerabilities[]? | {PkgName, InstalledVersion, Severity, Title}' trivy-reports/trivy-report.json
+            jq '.Results[]?.Vulnerabilities[]? | {PkgName, InstalledVersion, Severity, Title}' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade encontrada"
           else
             echo "✅ Relatório não encontrado"
           fi
