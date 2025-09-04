@@ -87,18 +87,19 @@ jobs:
           name: trivy-report
           path: trivy-reports/trivy-report.json
 
-      - name: Artifact download link
-        if: always()
-        run: |
-          echo "🔗 Para baixar o relatório Trivy (somente para quem tem acesso ao repositório), acesse:"
-          echo "https://github.com/${{ github.repository }}/suites/${{ github.run_id }}/artifacts"
-
       # --- Notificação Teams apenas se falhar ---
       - name: Notify Teams on Trivy failure
         if: failure()
         run: |
           if [ -n "$TEAMS_WEBHOOK_URL" ]; then
-            REPORT_URL="https://github.com/${{ github.repository }}/suites/${{ github.run_id }}/artifacts"
+            # Pega o artifact ID do workflow run atual
+            ARTIFACT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+              | jq -r '.artifacts[0].id')
+            
+            # Monta o link direto para o artifact
+            REPORT_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${ARTIFACT_ID}"
+            
             PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${APP_NAME}'.\\n🔗 Relatório disponível em: ${REPORT_URL}\"}"
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
           fi
