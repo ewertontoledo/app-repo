@@ -44,6 +44,7 @@ jobs:
             echo "📦 Buildando e pushando $IMAGE..."
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
+          fi
 
       # --- Instalar Trivy ---
       - name: Install Trivy
@@ -76,6 +77,7 @@ jobs:
             jq '.Results[]?.Vulnerabilities[]? | {PkgName, InstalledVersion, Severity, Title}' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade encontrada"
           else
             echo "✅ Relatório não encontrado"
+          fi
 
       # --- Upload Artifact ---
       - name: Upload Trivy report
@@ -88,16 +90,18 @@ jobs:
       - name: Artifact download link
         if: always()
         run: |
-          echo "🔗 Baixe o relatório Trivy em:"
-          echo "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "🔗 Para baixar o relatório Trivy (somente para quem tem acesso ao repositório), acesse:"
+          echo "https://github.com/${{ github.repository }}/suites/${{ github.run_id }}/artifacts"
 
+      # --- Notificação Teams apenas se falhar ---
       - name: Notify Teams on Trivy failure
         if: failure()
         run: |
           if [ -n "$TEAMS_WEBHOOK_URL" ]; then
-            REPORT_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            REPORT_URL="https://github.com/${{ github.repository }}/suites/${{ github.run_id }}/artifacts"
             PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${APP_NAME}'.\\n🔗 Relatório disponível em: ${REPORT_URL}\"}"
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
+          fi
 
       # --- Atualiza Fleet Repo ---
       - name: Update Fleet repo manifests
@@ -138,3 +142,4 @@ jobs:
             git commit -m "Atualiza imagem e porta para ${IMAGE}:${PORT} [ci skip]"
             git push origin "${BRANCH}"
             echo "✅ Manifest atualizado"
+          fi
