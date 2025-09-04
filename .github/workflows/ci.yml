@@ -1,30 +1,26 @@
-name: Build image -> OCIR, Trivy scan and update Fleet repo
+name: Build, Scan & Update Fleet
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 jobs:
-  build-and-push:
+  build-and-scan:
     runs-on: ubuntu-latest
     env:
       APP_NAME: "app-teste-2"
       APP_PORT: 9000
+      IMAGE_TAG: ${{ github.sha }}
       TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
 
     steps:
-      # --- Checkout ---
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
-
-      - name: Set up Docker Buildx
+      - name: Set up QEMU & Buildx
         uses: docker/setup-buildx-action@v2
 
-      # --- Login OCIR ---
       - name: Login to OCIR
         uses: docker/login-action@v2
         with:
@@ -32,115 +28,63 @@ jobs:
           username: ${{ secrets.OCIR_USERNAME }}
           password: ${{ secrets.OCIR_AUTH_TOKEN }}
 
-      # --- Build & Push Image ---
-      - name: Build and push image if not exists
-        run: |
-          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
-          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
-          echo "🔍 Verificando se a imagem já existe..."
-          if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
-            echo "✅ Imagem $IMAGE já existe"
-          else
-            echo "📦 Buildando e pushando $IMAGE..."
-            docker build -t "$IMAGE" .
-            docker push "$IMAGE"
-          fi
+      - name: Build & Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}
+          cache-from: type=registry,ref=${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:latest
+          cache-to: type=registry,ref=${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:cache,mode=max
 
-      # --- Instalar Trivy ---
-      - name: Install Trivy
-        run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
-          mkdir -p $HOME/bin
-          mv ./bin/trivy $HOME/bin/
-          echo "$HOME/bin" >> $GITHUB_PATH
-          export PATH="$HOME/bin:$PATH"
-          trivy --version
-
-      # --- Trivy Scan ---
-      - name: Criar diretório para relatório Trivy
-        run: mkdir -p trivy-reports
-
-      - name: Scan image with Trivy
+      - name: Scan Docker Image with Trivy
+        uses: aquasecurity/trivy-action@v1
         id: trivy
-        run: |
-          export PATH="$HOME/bin:$PATH"
-          trivy image --severity HIGH,CRITICAL --exit-code 1 \
-            --format json -o trivy-reports/trivy-report.json \
-            "${IMAGE}"
+        with:
+          image-ref: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ env.IMAGE_TAG }}
+          format: json
+          output: trivy-reports/trivy-report.json
+          severity: HIGH,CRITICAL
+          exit-code: 1
+        continue-on-error: true
 
-      # --- Mostrar resumo no log ---
-      - name: Show Trivy JSON summary in log
-        if: always()
-        run: |
-          echo "🔍 Resumo das vulnerabilidades HIGH/CRITICAL:"
-          if [ -f trivy-reports/trivy-report.json ]; then
-            jq '.Results[]?.Vulnerabilities[]? | {PkgName, InstalledVersion, Severity, Title}' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade encontrada"
-          else
-            echo "✅ Relatório não encontrado"
-          fi
-
-      # --- Upload Artifact ---
-      - name: Upload Trivy report
-        if: always()
+      - name: Upload Trivy Report
         uses: actions/upload-artifact@v4
         with:
           name: trivy-report
           path: trivy-reports/trivy-report.json
 
-      # --- Notificação Teams apenas se falhar ---
-      - name: Notify Teams on Trivy failure
+      - name: Generate Vulnerability Badge
+        run: |
+          mkdir -p badges
+          COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL")] | length' trivy-reports/trivy-report.json)
+          if [ "$COUNT" -eq 0 ]; then
+            STATUS="passing"
+          elif [ "$COUNT" -le 5 ]; then
+            STATUS="warning"
+          else
+            STATUS="critical"
+          fi
+          echo "{\"schemaVersion\":1,\"label\":\"Vulnerabilities\",\"message\":\"$COUNT HIGH/CRITICAL\",\"color\":\"$STATUS\"}" > badges/trivy-badge.json
+        shell: bash
+
+      - name: Notify Teams if Vulnerabilities Found
         if: failure()
         run: |
-          if [ -n "$TEAMS_WEBHOOK_URL" ]; then
-            # Pega o artifact ID do workflow run atual
-            ARTIFACT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
-              | jq -r '.artifacts[0].id')
-            
-            # Monta o link direto para o artifact
-            REPORT_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${ARTIFACT_ID}"
-            
-            PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${APP_NAME}'.\\n🔗 Relatório disponível em: ${REPORT_URL}\"}"
-            curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
-          fi
+          ARTIFACT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+            | jq -r '.artifacts[0].id')
+          REPORT_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${ARTIFACT_ID}"
+          PAYLOAD="{\"text\": \"⚠️ Pipeline falhou no scan do Trivy para '${APP_NAME}'.\\n🔗 Relatório: ${REPORT_URL}\"}"
+          curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
 
-      # --- Atualiza Fleet Repo ---
-      - name: Update Fleet repo manifests
+      - name: Update Fleet Repo Manifests
         if: success()
-        env:
-          FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
-          FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
-          FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
-          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
-          PORT: ${{ env.APP_PORT }}
-        run: |
-          set -euo pipefail
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
-          REPO_NO_PROTO="${FLEET_REPO#https://}"
-          CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
-          BRANCH="${FLEET_BRANCH:-main}"
-
-          git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
-          cd fleet-repo
-
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq jq
-
-          curl -sSL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
-          chmod +x yq
-          sudo mv yq /usr/local/bin/
-
-          MANIFEST="k8s/apps/${APP_NAME}/deployment.yaml"
-          yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$MANIFEST"
-          yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$MANIFEST"
-
-          if git diff --quiet --exit-code; then
-            echo "✅ Nenhuma alteração detectada"
-          else
-            git add "$MANIFEST"
-            git commit -m "Atualiza imagem e porta para ${IMAGE}:${PORT} [ci skip]"
-            git push origin "${BRANCH}"
-            echo "✅ Manifest atualizado"
-          fi
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: "Atualiza imagem e porta para ${{ env.APP_NAME }}:${{ env.IMAGE_TAG }} [ci skip]"
+          branch: ${{ secrets.FLEET_BRANCH }}
+          repository: ${{ secrets.FLEET_REPO_URL }}
+          file_pattern: "k8s/apps/${{ env.APP_NAME }}/deployment.yaml"
+          author_name: "github-actions[bot]"
+          author_email: "github-actions[bot]@users.noreply.github.com"
