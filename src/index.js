@@ -11,5 +11,4 @@ const port = process.env.PORT || 9000;
 app.listen(port, "0.0.0.0", () => {
   console.log(`✅ App running and listening on port ${port}`);
   console.log(`➡️ Access it via Nginx reverse proxy: http://stage-smart.surf.com.br`);
-}); 
-
+});
