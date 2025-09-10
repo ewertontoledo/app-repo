@@ -92,14 +92,10 @@ jobs:
         if: failure()
         run: |
           if [ -n "$TEAMS_WEBHOOK_URL" ]; then
-            # Pega o artifact ID do workflow run atual
             ARTIFACT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
               "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
               | jq -r '.artifacts[0].id')
-            
-            # Monta o link direto para o artifact
             REPORT_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${ARTIFACT_ID}"
-            
             PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${APP_NAME}'.\\n🔗 Relatório disponível em: ${REPORT_URL}\"}"
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
           fi
@@ -144,3 +140,35 @@ jobs:
             git push origin "${BRANCH}"
             echo "✅ Manifest atualizado"
           fi
+
+      # --- Atualiza tarefa no Monday ---
+      - name: Create/Update Monday Item
+        if: success()
+        env:
+          MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
+          APP_NAME: ${{ env.APP_NAME }}
+          IMAGE: ${{ env.IMAGE }}
+          BOARD_NAME: "DEPLOY"
+        run: |
+          echo "Buscando ID da board '$BOARD_NAME'..."
+          BOARD_ID=$(curl -s -X POST https://api.monday.com/v2 \
+            -H "Authorization: $MONDAY_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{ \"query\": \"{ boards { id name } }\" }" \
+          | jq -r ".data.boards[] | select(.name==\"$BOARD_NAME\") | .id")
+
+          if [ -z "$BOARD_ID" ]; then
+            echo "Board '$BOARD_NAME' não encontrada!"
+            exit 1
+          fi
+
+          ITEM_NAME="Deploy Stage - $APP_NAME"
+          echo "Criando item '$ITEM_NAME' na board '$BOARD_NAME' (ID: $BOARD_ID)..."
+
+          curl -s -X POST https://api.monday.com/v2 \
+            -H "Authorization: $MONDAY_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"query\": \"mutation { create_item(board_id: $BOARD_ID, item_name: \\\"$ITEM_NAME\\\", column_values: \\\"{\\\\\\\"status\\\\\\\":{\\\\\\\"label\\\\\\\":\\\\\\\"Para Teste\\\\\\\"},\\\\\\\"text\\\\\\\":\\\\\\\"Imagem: $IMAGE\\\\\\\"}\\\") { id } }\"
+            }"
+          echo "Item criado com sucesso!"
