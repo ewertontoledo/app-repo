@@ -35,7 +35,7 @@ jobs:
       # --- Build & Push Image ---
       - name: Build and push image if not exists
         run: |
-          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${APP_NAME}:${{ github.sha }}"
+          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/stage/image/${APP_NAME}:${{ github.sha }}"
           echo "IMAGE=$IMAGE" >> $GITHUB_ENV
           echo "🔍 Verificando se a imagem já existe..."
           if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
@@ -111,7 +111,7 @@ jobs:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
           FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
-          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/poc/image/${{ env.APP_NAME }}:${{ github.sha }}
+          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/stage/image/${{ env.APP_NAME }}:${{ github.sha }}
           PORT: ${{ env.APP_PORT }}
         run: |
           set -euo pipefail
