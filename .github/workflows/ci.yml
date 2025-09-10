@@ -44,9 +44,61 @@ jobs:
             echo "📦 Buildando e pushando $IMAGE..."
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
+          fi
 
-      # --- Trivy Scan (comentado) ---
-      # (mantido comentado para testes do Monday, igual ao seu original)
+      # --- Instalar Trivy ---
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          mkdir -p $HOME/bin
+          mv ./bin/trivy $HOME/bin/
+          echo "$HOME/bin" >> $GITHUB_PATH
+          export PATH="$HOME/bin:$PATH"
+          trivy --version
+
+      # --- Trivy Scan ---
+      - name: Criar diretório para relatório Trivy
+        run: mkdir -p trivy-reports
+
+      - name: Scan image with Trivy
+        id: trivy
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          trivy image --severity HIGH,CRITICAL --exit-code 1 \
+            --format json -o trivy-reports/trivy-report.json \
+            "${IMAGE}"
+
+      # --- Mostrar resumo no log ---
+      - name: Show Trivy JSON summary in log
+        if: always()
+        run: |
+          echo "🔍 Resumo das vulnerabilidades HIGH/CRITICAL:"
+          if [ -f trivy-reports/trivy-report.json ]; then
+            jq '.Results[]?.Vulnerabilities[]? | {PkgName, InstalledVersion, Severity, Title}' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade encontrada"
+          else
+            echo "✅ Relatório não encontrado"
+          fi
+
+      # --- Upload Artifact ---
+      - name: Upload Trivy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy-reports/trivy-report.json
+
+      # --- Notificação Teams apenas se falhar ---
+      - name: Notify Teams on Trivy failure
+        if: failure()
+        run: |
+          if [ -n "$TEAMS_WEBHOOK_URL" ]; then
+            ARTIFACT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+              | jq -r '.artifacts[0].id')
+            REPORT_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${ARTIFACT_ID}"
+            PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${APP_NAME}'.\\n🔗 Relatório disponível em: ${REPORT_URL}\"}"
+            curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
+          fi
 
       # --- Atualiza Fleet Repo ---
       - name: Update Fleet repo manifests
@@ -57,30 +109,23 @@ jobs:
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
           IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/stage/image/${{ env.APP_NAME }}:${{ github.sha }}
           PORT: ${{ env.APP_PORT }}
-          APP_NAME: ${{ env.APP_NAME }}
         run: |
           set -euo pipefail
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
           REPO_NO_PROTO="${FLEET_REPO#https://}"
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
           BRANCH="${FLEET_BRANCH:-main}"
-
           git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
           cd fleet-repo
-
           sudo apt-get update -qq
           sudo apt-get install -y -qq jq
-
           curl -sSL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
           chmod +x yq
           sudo mv yq /usr/local/bin/
-
           MANIFEST="k8s/apps/${APP_NAME}/stage/deployment.yaml"
           yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$MANIFEST"
           yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$MANIFEST"
-
           if git diff --quiet --exit-code; then
             echo "✅ Nenhuma alteração detectada"
           else
@@ -99,9 +144,9 @@ jobs:
           BOARD_ID: "10018892855"  # ID fixo da board Deploy
         run: |
           ITEM_NAME="Deploy Stage - $APP_NAME"
-          echo "Criando item '$ITEM_NAME' na board Deploy (ID: $BOARD_ID)..."
+          echo "Criando item '$ITEM_NAME' na board (ID: $BOARD_ID)..."
 
-          # Cria JSON para column_values de forma segura
+          # JSON seguro para column_values
           COLUMN_VALUES=$(jq -n \
             --arg status "Para Teste" \
             --arg text "Imagem: $IMAGE" \
@@ -115,4 +160,4 @@ jobs:
               \"query\": \"mutation { create_item(board_id: $BOARD_ID, item_name: \\\"$ITEM_NAME\\\", column_values: '$COLUMN_VALUES') { id } }\"
             }"
 
-          echo "Item criado com sucesso!"
+          echo "✅ Item criado com sucesso!"
