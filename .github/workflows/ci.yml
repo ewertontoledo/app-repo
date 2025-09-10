@@ -2,7 +2,7 @@ name: Build image -> OCIR, Trivy scan and update Fleet repo
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "stage" ]
   workflow_dispatch:
 
 jobs:
