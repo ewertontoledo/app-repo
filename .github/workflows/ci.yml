@@ -138,16 +138,27 @@ jobs:
           BOARD_ID: "10018892855"
         run: |
           ITEM_NAME="Deploy Stage - $APP_NAME"
-          echo "🚀 Criando item: $ITEM_NAME"
-    
-          curl -X POST https://api.monday.com/v2 \
+          echo "🚀 Verificando se item '$ITEM_NAME' já existe..."
+
+          # Buscar item existente com status 'Para Teste' ou 'Em Correção'
+          EXISTING_ITEM_ID=$(curl -s -X POST https://api.monday.com/v2 \
             -H "Authorization: $MONDAY_API_TOKEN" \
             -H "Content-Type: application/json" \
-            --data-raw "{
-              \"query\": \"mutation { create_item(board_id: $BOARD_ID, item_name: \\\"$ITEM_NAME\\\") { id name } }\"
+            -d "{
+              \"query\": \"{ boards(ids: $BOARD_ID) { items { id name column_values(ids: [\\\"status\\\"]) { text } } } }\"
             }" \
-            --fail
-    
-          echo "✅ Item criado com sucesso!"  
+            | jq -r ".data.boards[0].items[] | select(.name==\"$ITEM_NAME\" and (.column_values[0].text==\"Para Teste\" or .column_values[0].text==\"Em Correção\")) | .id")
 
-          
+          if [ -z "$EXISTING_ITEM_ID" ]; then
+            # Cria novo item se não existir
+            curl -s -X POST https://api.monday.com/v2 \
+              -H "Authorization: $MONDAY_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"query\": \"mutation { create_item(board_id: $BOARD_ID, item_name: \\\"$ITEM_NAME\\\") { id name } }\"
+              }" \
+              --fail
+            echo "✅ Item criado com sucesso!"
+          else
+            echo "⚠️ Item '$ITEM_NAME' já existe com status 'Para Teste' ou 'Em Correção'. Não será duplicado (ID: $EXISTING_ITEM_ID)."
+          fi
