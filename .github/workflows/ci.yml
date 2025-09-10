@@ -148,4 +148,6 @@ jobs:
             }" \
             --fail
     
-          echo "✅ Item criado com sucesso!"
+          echo "✅ Item criado com sucesso!"  
+
+          
