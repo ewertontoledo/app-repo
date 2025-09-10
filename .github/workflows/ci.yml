@@ -2,7 +2,7 @@ name: Build image -> OCIR, Trivy scan and update Fleet repo
 
 on:
   push:
-    branches: ["stage"]
+    branches: [ "stage" ]
   workflow_dispatch:
 
 jobs:
@@ -45,7 +45,6 @@ jobs:
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
           fi
-
       # --- Instalar Trivy ---
       - name: Install Trivy
         run: |
@@ -55,7 +54,6 @@ jobs:
           echo "$HOME/bin" >> $GITHUB_PATH
           export PATH="$HOME/bin:$PATH"
           trivy --version
-
       # --- Trivy Scan ---
       - name: Criar diretório para relatório Trivy
         run: mkdir -p trivy-reports
@@ -67,7 +65,6 @@ jobs:
           trivy image --severity HIGH,CRITICAL --exit-code 1 \
             --format json -o trivy-reports/trivy-report.json \
             "${IMAGE}"
-
       # --- Mostrar resumo no log ---
       - name: Show Trivy JSON summary in log
         if: always()
@@ -78,7 +75,6 @@ jobs:
           else
             echo "✅ Relatório não encontrado"
           fi
-
       # --- Upload Artifact ---
       - name: Upload Trivy report
         if: always()
@@ -99,7 +95,6 @@ jobs:
             PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${APP_NAME}'.\\n🔗 Relatório disponível em: ${REPORT_URL}\"}"
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
           fi
-
       # --- Atualiza Fleet Repo ---
       - name: Update Fleet repo manifests
         if: success()
@@ -133,7 +128,7 @@ jobs:
             git commit -m "Atualiza imagem e porta para ${IMAGE}:${PORT} [ci skip]"
             git push origin "${BRANCH}"
             echo "✅ Manifest atualizado"
-
+          fi
       # --- Atualiza tarefa no Monday ---
       - name: Create/Update Monday Item
         if: success()
@@ -144,20 +139,11 @@ jobs:
           BOARD_ID: "10018892855"  # ID fixo da board Deploy
         run: |
           ITEM_NAME="Deploy Stage - $APP_NAME"
-          echo "Criando item '$ITEM_NAME' na board (ID: $BOARD_ID)..."
-
-          # JSON seguro para column_values
-          COLUMN_VALUES=$(jq -n \
-            --arg status "Para Teste" \
-            --arg text "Imagem: $IMAGE" \
-            '{status: {label: $status}, text: $text}')
-
-          # Executa mutation no Monday
+          echo "Criando item '$ITEM_NAME' na board Deploy (ID: $BOARD_ID)..."
           curl -s -X POST https://api.monday.com/v2 \
             -H "Authorization: $MONDAY_API_TOKEN" \
             -H "Content-Type: application/json" \
             -d "{
-              \"query\": \"mutation { create_item(board_id: $BOARD_ID, item_name: \\\"$ITEM_NAME\\\", column_values: '$COLUMN_VALUES') { id } }\"
+              \"query\": \"mutation { create_item(board_id: $BOARD_ID, item_name: \\\"$ITEM_NAME\\\", column_values: \\\"{\\\\\\\"status\\\\\\\":{\\\\\\\"label\\\\\\\":\\\\\\\"Para Teste\\\\\\\"},\\\\\\\"text\\\\\\\":\\\\\\\"Imagem: $IMAGE\\\\\\\"}\\\") { id } }\"
             }"
-
-          echo "✅ Item criado com sucesso!"
+          echo "Item criado com sucesso!"
