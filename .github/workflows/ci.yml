@@ -130,35 +130,41 @@ jobs:
             echo "✅ Manifest atualizado"
           fi
       
-      - name: Create Monday Item
+      - name: Update Monday Item or Manifest
         if: success()
         env:
           MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
           APP_NAME: ${{ env.APP_NAME }}
           BOARD_ID: "10018892855"
+          IMAGE: ${{ env.IMAGE }}
         run: |
+          # Buscar o item existente pelo nome
           ITEM_NAME="Deploy Stage - $APP_NAME"
-          echo "🚀 Verificando se item '$ITEM_NAME' já existe..."
-
-          # Buscar item existente com status 'Para Teste' ou 'Em Correção'
           EXISTING_ITEM_ID=$(curl -s -X POST https://api.monday.com/v2 \
             -H "Authorization: $MONDAY_API_TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"query\": \"{ boards(ids: $BOARD_ID) { items { id name column_values(ids: [\\\"status\\\"]) { text } } } }\"
-            }" \
-            | jq -r ".data.boards[0].items[] | select(.name==\"$ITEM_NAME\" and (.column_values[0].text==\"Para Teste\" or .column_values[0].text==\"Em Correção\")) | .id")
+            -d "{ \"query\": \"{ boards(ids: $BOARD_ID) { items { id name column_values { text title } } } }\" }" \
+            | jq -r ".data.boards[0].items[] | select(.name==\"$ITEM_NAME\") | .id")
 
-          if [ -z "$EXISTING_ITEM_ID" ]; then
-            # Cria novo item se não existir
+          # Verificar status atual
+          STATUS=$(curl -s -X POST https://api.monday.com/v2 \
+            -H "Authorization: $MONDAY_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{ \"query\": \"{ items(ids: $EXISTING_ITEM_ID) { column_values(ids: \\\"status\\\") { text } } }\" }" \
+            | jq -r ".data.items[0].column_values[0].text")
+
+          echo "Status atual do item: $STATUS"
+
+          if [[ "$STATUS" == "Para Teste" || "$STATUS" == "Em Correção" ]]; then
+            echo "✅ Item já existe com status '$STATUS'. Atualizando apenas o manifest."
+          else
+            echo "🚀 Criando novo item no Monday..."
             curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: $MONDAY_API_TOKEN" \
               -H "Content-Type: application/json" \
               -d "{
-                \"query\": \"mutation { create_item(board_id: $BOARD_ID, item_name: \\\"$ITEM_NAME\\\") { id name } }\"
-              }" \
-              --fail
+                    \"query\": \"mutation { create_item(board_id: $BOARD_ID, item_name: \\\"$ITEM_NAME\\\", column_values: \\\"{\\\\\\\"status\\\\\\\":{\\\\\\\"label\\\\\\\":\\\\\\\"Para Teste\\\\\\\"},\\\\\\\"text\\\\\\\":\\\\\\\"Imagem: $IMAGE\\\\\\\"}\\\") { id } }\"
+                  }"
             echo "✅ Item criado com sucesso!"
-          else
-            echo "⚠️ Item '$ITEM_NAME' já existe com status 'Para Teste' ou 'Em Correção'. Não será duplicado (ID: $EXISTING_ITEM_ID)."
           fi
+              
