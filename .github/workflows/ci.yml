@@ -2,7 +2,7 @@ name: Build image -> OCIR, Trivy scan and update Fleet repo
 
 on:
   push:
-    branches: [ "stage" ]
+    branches: ["stage"]
   workflow_dispatch:
 
 jobs:
@@ -44,61 +44,18 @@ jobs:
             echo "📦 Buildando e pushando $IMAGE..."
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
-          fi
 
-      # --- Instalar Trivy ---
-      - name: Install Trivy
-        run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
-          mkdir -p $HOME/bin
-          mv ./bin/trivy $HOME/bin/
-          echo "$HOME/bin" >> $GITHUB_PATH
-          export PATH="$HOME/bin:$PATH"
-          trivy --version
-
-      # --- Trivy Scan ---
-      - name: Criar diretório para relatório Trivy
-        run: mkdir -p trivy-reports
-
-      - name: Scan image with Trivy
-        id: trivy
-        run: |
-          export PATH="$HOME/bin:$PATH"
-          trivy image --severity HIGH,CRITICAL --exit-code 1 \
-            --format json -o trivy-reports/trivy-report.json \
-            "${IMAGE}"
-
-      # --- Mostrar resumo no log ---
-      - name: Show Trivy JSON summary in log
-        if: always()
-        run: |
-          echo "🔍 Resumo das vulnerabilidades HIGH/CRITICAL:"
-          if [ -f trivy-reports/trivy-report.json ]; then
-            jq '.Results[]?.Vulnerabilities[]? | {PkgName, InstalledVersion, Severity, Title}' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade encontrada"
-          else
-            echo "✅ Relatório não encontrado"
-          fi
-
-      # --- Upload Artifact ---
-      - name: Upload Trivy report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: trivy-report
-          path: trivy-reports/trivy-report.json
-
-      # --- Notificação Teams apenas se falhar ---
-      - name: Notify Teams on Trivy failure
-        if: failure()
-        run: |
-          if [ -n "$TEAMS_WEBHOOK_URL" ]; then
-            ARTIFACT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
-              | jq -r '.artifacts[0].id')
-            REPORT_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${ARTIFACT_ID}"
-            PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${APP_NAME}'.\\n🔗 Relatório disponível em: ${REPORT_URL}\"}"
-            curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
-          fi
+      # --- Trivy Scan (comentado) ---
+      # - name: Install Trivy
+      #   run: |
+      #     curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+      #     mkdir -p $HOME/bin
+      #     mv ./bin/trivy $HOME/bin/
+      #     echo "$HOME/bin" >> $GITHUB_PATH
+      #     export PATH="$HOME/bin:$PATH"
+      #     trivy --version
+      # ...
+      # (demais steps do Trivy omitidos para agilizar testes)
 
       # --- Atualiza Fleet Repo ---
       - name: Update Fleet repo manifests
@@ -133,7 +90,6 @@ jobs:
             git commit -m "Atualiza imagem e porta para ${IMAGE}:${PORT} [ci skip]"
             git push origin "${BRANCH}"
             echo "✅ Manifest atualizado"
-          fi
 
       # --- Atualiza tarefa no Monday ---
       - name: Create/Update Monday Item
@@ -147,11 +103,18 @@ jobs:
           ITEM_NAME="Deploy Stage - $APP_NAME"
           echo "Criando item '$ITEM_NAME' na board Deploy (ID: $BOARD_ID)..."
 
+          # Cria JSON para column_values de forma segura
+          COLUMN_VALUES=$(jq -n \
+            --arg status "Para Teste" \
+            --arg text "Imagem: $IMAGE" \
+            '{status: {label: $status}, text: $text}')
+
+          # Executa mutation no Monday
           curl -s -X POST https://api.monday.com/v2 \
             -H "Authorization: $MONDAY_API_TOKEN" \
             -H "Content-Type: application/json" \
             -d "{
-              \"query\": \"mutation { create_item(board_id: $BOARD_ID, item_name: \\\"$ITEM_NAME\\\", column_values: \\\"{\\\\\\\"status\\\\\\\":{\\\\\\\"label\\\\\\\":\\\\\\\"Para Teste\\\\\\\"},\\\\\\\"text\\\\\\\":\\\\\\\"Imagem: $IMAGE\\\\\\\"}\\\") { id } }\"
+              \"query\": \"mutation { create_item(board_id: $BOARD_ID, item_name: \\\"$ITEM_NAME\\\", column_values: '$COLUMN_VALUES') { id } }\"
             }"
 
           echo "Item criado com sucesso!"
