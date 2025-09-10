@@ -2,7 +2,7 @@ const express = require("express");
 const app = express();
 
 app.get("/", (req, res) => {
-  res.send("🚀 imagem docker exemplo");
+  res.send("🚀 Promover deploy de stage para prod");
 });
 
 // Porta definida via variável de ambiente ou fallback para 9000
