@@ -130,24 +130,52 @@ jobs:
             echo "✅ Manifest atualizado"
           fi
       
-      - name: Create Monday Item
+      - name: Update Monday Item or Manifest
         if: success()
         env:
           MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
           APP_NAME: ${{ env.APP_NAME }}
           BOARD_ID: "10018892855"
+          IMAGE: ${{ env.IMAGE }}
         run: |
           ITEM_NAME="Deploy Stage - $APP_NAME"
-          echo "🚀 Criando item: $ITEM_NAME"
-    
-          curl -X POST https://api.monday.com/v2 \
+
+          echo "🚀 Verificando se já existe item: $ITEM_NAME"
+
+          QUERY=$(cat <<EOF
+          {
+            "query": "{ boards(ids: $BOARD_ID) { items { id name column_values(ids: \\\"status\\\") { text } } } }"
+          }
+          EOF
+          )
+
+          RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
             -H "Authorization: $MONDAY_API_TOKEN" \
             -H "Content-Type: application/json" \
-            --data-raw "{
-              \"query\": \"mutation { create_item(board_id: $BOARD_ID, item_name: \\\"$ITEM_NAME\\\") { id name } }\"
-            }" \
-            --fail
-    
-          echo "✅ Item criado com sucesso!"  
+            --data-raw "$QUERY")
 
-          
+          ITEM_ID=$(echo "$RESPONSE" | jq -r ".data.boards[0].items[] | select(.name==\"$ITEM_NAME\") | .id")
+          STATUS=$(echo "$RESPONSE" | jq -r ".data.boards[0].items[] | select(.name==\"$ITEM_NAME\") | .column_values[0].text")
+
+          echo "🔎 ITEM_ID: $ITEM_ID | STATUS: $STATUS"
+
+          if [[ "$STATUS" == "Para Teste" || "$STATUS" == "Em Correção" ]]; then
+            echo "✅ Item já existe com status '$STATUS'. Não criando novo."
+          else
+            echo "🚀 Criando novo item no Monday..."
+            MUTATION=$(cat <<EOF
+            {
+              "query": "mutation { create_item(board_id: $BOARD_ID, item_name: \\\"$ITEM_NAME\\\", column_values: \\\"{\\\\\\\"status\\\\\\\":{\\\\\\\"label\\\\\\\":\\\\\\\"Para Teste\\\\\\\"},\\\\\\\"text\\\\\\\":\\\\\\\"Imagem: $IMAGE\\\\\\\"}\\\") { id } }"
+            }
+            EOF
+            )
+
+            curl -s -X POST https://api.monday.com/v2 \
+              -H "Authorization: $MONDAY_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data-raw "$MUTATION" --fail
+
+            echo "✅ Item criado com sucesso!"
+          fi
+
+              
