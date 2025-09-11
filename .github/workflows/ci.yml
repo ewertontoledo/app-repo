@@ -130,22 +130,21 @@ jobs:
             echo "✅ Manifest atualizado"
           fi
       
-      - name: Update Monday Item or Manifest
+      - name: Update/Create Monday Item
         if: success()
         env:
           MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
           APP_NAME: ${{ env.APP_NAME }}
-          BOARD_ID: "10018892855"
           IMAGE: ${{ env.IMAGE }}
+          BOARD_ID: "10018892855"
         run: |
           ITEM_NAME="Deploy Stage - $APP_NAME"
 
           echo "🚀 Verificando se já existe item: $ITEM_NAME"
 
+          # Buscar itens da board
           QUERY=$(cat <<EOF
-          {
-            "query": "{ boards(ids: $BOARD_ID) { items { id name column_values(ids: \\\"status\\\") { text } } } }"
-          }
+          { "query": "{ boards(ids: $BOARD_ID) { items { id name column_values(ids: \\\"status\\\") { text } } } }" }
           EOF
           )
 
@@ -159,19 +158,30 @@ jobs:
 
           echo "🔎 ITEM_ID: $ITEM_ID | STATUS: $STATUS"
 
-          if [[ "$STATUS" == "Para Teste" || "$STATUS" == "Em Correção" ]]; then
-            echo "✅ Item já existe com status '$STATUS'. Não criando novo."
-          else
-            echo "🚀 Criando novo item no Monday..."
-            MUTATION=$(cat <<EOF
-            {
-              "query": "mutation { create_item(board_id: $BOARD_ID, item_name: \\\"$ITEM_NAME\\\", column_values: \\\"{\\\\\\\"status\\\\\\\":{\\\\\\\"label\\\\\\\":\\\\\\\"Para Teste\\\\\\\"},\\\\\\\"text\\\\\\\":\\\\\\\"Imagem: $IMAGE\\\\\\\"}\\\") { id } }"
-            }
-            EOF
-            )
+          # Monta valores da coluna com jq (sem escapes manuais)
+          COLUMN_VALUES=$(jq -n \
+            --arg status "Para Teste" \
+            --arg text "Imagem: $IMAGE" \
+            '{status: {label: $status}, text: $text}')
+
+          if [[ -n "$ITEM_ID" && ( "$STATUS" == "Para Teste" || "$STATUS" == "Em Correção" ) ]]; then
+            echo "♻️ Atualizando item existente ($ITEM_ID) com nova imagem..."
+            MUTATION=$(jq -n --arg board_id "$BOARD_ID" --arg item_id "$ITEM_ID" --arg values "$COLUMN_VALUES" \
+              '{query: "mutation { change_multiple_column_values(board_id: \($board_id), item_id: \($item_id), column_values: \"\($values | @json)\") { id } }"}')
 
             curl -s -X POST https://api.monday.com/v2 \
-              -H "Authorization: $MONDAY_API_TOKEN" \
+              -H "Authorization: '"$MONDAY_API_TOKEN"'" \
+              -H "Content-Type: application/json" \
+              --data-raw "$MUTATION" --fail
+
+            echo "✅ Item atualizado com sucesso!"
+          else
+            echo "🆕 Criando novo item no Monday..."
+            MUTATION=$(jq -n --arg board_id "$BOARD_ID" --arg item_name "$ITEM_NAME" --arg values "$COLUMN_VALUES" \
+              '{query: "mutation { create_item(board_id: \($board_id), item_name: \"\($item_name)\", column_values: \"\($values | @json)\") { id } }"}')
+
+            curl -s -X POST https://api.monday.com/v2 \
+              -H "Authorization: '"$MONDAY_API_TOKEN"'" \
               -H "Content-Type: application/json" \
               --data-raw "$MUTATION" --fail
 
