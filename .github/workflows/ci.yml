@@ -130,9 +130,6 @@ jobs:
             echo "✅ Manifest atualizado"
           fi
       
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-
       - name: Update/Create Monday Item
         if: success()
         env:
@@ -146,7 +143,6 @@ jobs:
           ITEM_NAME="Deploy Stage - $APP_NAME"
           echo "🚀 Verificando se já existe item: $ITEM_NAME"
 
-          # Função simples para escapar aspas para GraphQL
           sanitize_string() {
             echo "$1" | sed 's/"/\\"/g' | tr -d '\n\r'
           }
@@ -154,7 +150,10 @@ jobs:
           SAFE_ITEM_NAME=$(sanitize_string "$ITEM_NAME")
           SAFE_IMAGE_INFO=$(sanitize_string "Imagem: $IMAGE")
 
-          # Buscar itens existentes na board
+          # IDs de colunas (ajuste conforme seu board!)
+          STATUS_COLUMN="status"   # ou ex: "status_1"
+          TEXT_COLUMN="text"       # ou ex: "notes"
+
           QUERY="{\"query\": \"{ boards(ids: [$BOARD_ID]) { items { id name } } }\"}"
           RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
             -H "Authorization: $MONDAY_API_TOKEN" \
@@ -163,18 +162,23 @@ jobs:
 
           echo "📊 Resposta da API: $RESPONSE"
 
-          # Verificar se o board existe e contém itens
-          if ! echo "$RESPONSE" | jq -e '.data.boards[0].items' >/dev/null 2>&1; then
-            echo "❌ Não foi possível listar os itens da board. Verifique BOARD_ID e token."
-            exit 1
-          fi
-
           ITEM_ID=$(echo "$RESPONSE" | jq -r ".data.boards[0].items[]? | select(.name==\"$ITEM_NAME\") | .id")
 
           if [[ -n "$ITEM_ID" && "$ITEM_ID" != "null" ]]; then
             echo "♻️ Atualizando item existente: $ITEM_ID"
 
-            UPDATE_MUTATION="{\"query\": \"mutation { change_multiple_column_values(board_id: $BOARD_ID, item_id: $ITEM_ID, column_values: \\\"{\\\\\\\"status\\\\\\\": {\\\\\\\"index\\\\\\\": 2}, \\\\\\\"text\\\\\\\": \\\\\\\"$SAFE_IMAGE_INFO\\\\\\\"}\\\") { id } }\"}"
+            UPDATE_MUTATION=$(cat <<EOF
+            {"query": "mutation {
+              change_multiple_column_values(
+                board_id: $BOARD_ID,
+                item_id: $ITEM_ID,
+                column_values: \"{\\\"$STATUS_COLUMN\\\": {\\\"index\\\": 2}, \\\"$TEXT_COLUMN\\\": \\\"$SAFE_IMAGE_INFO\\\"}\"
+              ) { id }
+            }"}
+            EOF
+            )
+
+            echo "📤 Enviando update: $UPDATE_MUTATION"
 
             UPDATE_RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: $MONDAY_API_TOKEN" \
@@ -185,7 +189,6 @@ jobs:
 
             if ! echo "$UPDATE_RESPONSE" | jq -e '.data.change_multiple_column_values.id' >/dev/null 2>&1; then
               echo "❌ Erro ao atualizar item"
-              echo "$UPDATE_RESPONSE"
               exit 1
             fi
 
@@ -194,7 +197,18 @@ jobs:
           else
             echo "🆕 Criando novo item no Monday.com..."
 
-            CREATE_MUTATION="{\"query\": \"mutation { create_item(board_id: $BOARD_ID, item_name: \\\"$SAFE_ITEM_NAME\\\", column_values: \\\"{\\\\\\\"status\\\\\\\": {\\\\\\\"index\\\\\\\": 2}, \\\\\\\"text\\\\\\\": \\\\\\\"$SAFE_IMAGE_INFO\\\\\\\"}\\\") { id } }\"}"
+            CREATE_MUTATION=$(cat <<EOF
+            {"query": "mutation {
+              create_item(
+                board_id: $BOARD_ID,
+                item_name: \\\"$SAFE_ITEM_NAME\\\",
+                column_values: \\\"{\\\\\\\"$STATUS_COLUMN\\\\\\\": {\\\\\\\"index\\\\\\\": 2}, \\\\\\\"$TEXT_COLUMN\\\\\\\": \\\\\\\"$SAFE_IMAGE_INFO\\\\\\\"}\\\"
+              ) { id }
+            }"}
+            EOF
+            )
+
+            echo "📤 Enviando create: $CREATE_MUTATION"
 
             CREATE_RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: $MONDAY_API_TOKEN" \
@@ -205,7 +219,6 @@ jobs:
 
             if ! echo "$CREATE_RESPONSE" | jq -e '.data.create_item.id' >/dev/null 2>&1; then
               echo "❌ Erro ao criar item"
-              echo "$CREATE_RESPONSE"
               exit 1
             fi
 
