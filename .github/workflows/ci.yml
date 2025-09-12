@@ -130,7 +130,7 @@ jobs:
             echo "✅ Manifest atualizado"
           fi
       
-      - name: Create/Update Monday Item (Debug completo)
+      - name: Create/Update Monday Item (Final)
         if: success()
         env:
           MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
@@ -145,12 +145,13 @@ jobs:
 
           echo "🚀 Processando item: $ITEM_NAME"
 
+          # Escapa strings para JSON/GraphQL
           json_escape() { jq -Rn --arg str "$1" '$str|@json'; }
           SAFE_ITEM_NAME=$(json_escape "$ITEM_NAME")
           SAFE_IMAGE_INFO=$(json_escape "$IMAGE_INFO")
 
-          # Função de request para debug (não faz exit)
-          call_monday_debug() {
+          # Função para enviar requisição e debug
+          call_monday() {
             local payload="$1"
             RESPONSE=$(curl -s -w "\n%{http_code}" -X POST https://api.monday.com/v2 \
               -H "Authorization: $MONDAY_API_TOKEN" \
@@ -165,11 +166,36 @@ jobs:
             echo "📥 Resposta da API:"
             echo "$BODY" | jq . || echo "$BODY"
 
-            # Não dá exit, só retorna os valores
-            echo "$HTTP_CODE"
+            if [ "$HTTP_CODE" -ne 200 ]; then
+              echo "❌ HTTP $HTTP_CODE"
+              exit 1
+            fi
+            if echo "$BODY" | jq -e '.errors' >/dev/null; then
+              echo "❌ API Error: $(echo $BODY | jq .errors)"
+              exit 1
+            fi
             echo "$BODY"
           }
 
-          echo "🔹 Testando listagem de items..."
-          QUERY=$(jq -n '{query:"{ boards(ids: [10018892855]) { items { id name } } }"}')
-          call_monday_debug "$QUERY"
+          # 1️⃣ Listagem de itens do board
+          QUERY=$(jq -n '{query:"{ boards(ids: 10018892855) { items { id name column_values { id text } } } }"}')
+          BODY=$(call_monday "$QUERY")
+          ITEM_ID=$(echo "$BODY" | jq -r ".data.boards[0].items[]? | select(.name==\"$ITEM_NAME\") | .id")
+
+          # 2️⃣ Upsert: atualiza ou cria
+          if [ -n "$ITEM_ID" ]; then
+            echo "♻️ Atualizando item existente: $ITEM_ID"
+            MUTATION=$(jq -n --arg id "$ITEM_ID" --arg text "$SAFE_IMAGE_INFO" \
+              '{query: "mutation { change_multiple_column_values(board_id: 10018892855, item_id: \($id), column_values:{\"status\":{\"index\":2},\"text\":\($text)}) { id } }"}')
+            BODY=$(call_monday "$MUTATION")
+            echo "✅ Item atualizado com sucesso: $ITEM_ID"
+          else
+            echo "🆕 Criando novo item"
+            MUTATION=$(jq -n --arg name "$SAFE_ITEM_NAME" --arg text "$SAFE_IMAGE_INFO" \
+              '{query: "mutation { create_item(board_id: 10018892855, item_name: \($name), column_values:{\"status\":{\"index\":2},\"text\":\($text)}) { id } }"}')
+            BODY=$(call_monday "$MUTATION")
+            NEW_ITEM_ID=$(echo "$BODY" | jq -r '.data.create_item.id')
+            echo "✅ Item criado com sucesso: $NEW_ITEM_ID"
+          fi
+
+          echo "🎉 Integração com Monday.com finalizada!"
