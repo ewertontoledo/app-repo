@@ -130,7 +130,7 @@ jobs:
             echo "✅ Manifest atualizado"
           fi
       
-      - name: Update/Create Monday Item (debug)
+      - name: Update/Create Monday Item (compacto)
         if: success()
         env:
           MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
@@ -138,111 +138,65 @@ jobs:
           IMAGE: ${{ env.IMAGE }}
           BOARD_ID: "10018892855"
         run: |
-          set -o pipefail
+          set -eo pipefail
 
           ITEM_NAME="Deploy Stage - $APP_NAME"
-          echo "🚀 Verificando se já existe item: $ITEM_NAME"
+          IMAGE_INFO="Imagem: $IMAGE"
 
-          # Função simples para escapar aspas para GraphQL
-          sanitize_string() {
-            echo "$1" | sed 's/"/\\"/g' | tr -d '\n\r'
+          echo "🚀 Processando item: $ITEM_NAME"
+
+          # Escapa strings para JSON/GraphQL
+          json_escape() { jq -Rn --arg str "$1" '$str|@json'; }
+          SAFE_ITEM_NAME=$(json_escape "$ITEM_NAME")
+          SAFE_IMAGE_INFO=$(json_escape "$IMAGE_INFO")
+
+          # Função genérica para enviar mutation/query
+          call_monday() {
+            local payload="$1"
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST https://api.monday.com/v2 \
+              -H "Authorization: $MONDAY_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data-raw "$payload")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+            BODY=$(echo "$RESPONSE" | sed '$d')
+            if [ "$HTTP_CODE" -ne 200 ]; then
+              echo "❌ HTTP $HTTP_CODE: $BODY"
+              exit 1
+            fi
+            if echo "$BODY" | jq -e '.errors' >/dev/null; then
+              echo "❌ API Error: $(echo $BODY | jq .errors)"
+              exit 1
+            fi
+            echo "$BODY"
           }
 
-          SAFE_ITEM_NAME=$(sanitize_string "$ITEM_NAME")
-          SAFE_IMAGE_INFO=$(sanitize_string "Imagem: $IMAGE")
+          # 1️⃣ Verifica se o item já existe
+          QUERY=$(cat <<EOF
+          {"query":"query { boards(ids: [$BOARD_ID]) { items(limit:100, filter:{name:$SAFE_ITEM_NAME}) { id name } } }"}
+          EOF
+          )
+          BODY=$(call_monday "$QUERY")
+          ITEM_ID=$(echo "$BODY" | jq -r ".data.boards[0].items[0].id // empty")
 
-          echo "🔎 Debug vars:"
-          echo "ITEM_NAME=$ITEM_NAME"
-          echo "SAFE_ITEM_NAME=$SAFE_ITEM_NAME"
-          echo "SAFE_IMAGE_INFO=$SAFE_IMAGE_INFO"
-
-          # Buscar itens existentes na board
-          QUERY="{\"query\": \"{ boards(ids: [$BOARD_ID]) { items { id name } } }\"}"
-          echo "📤 Enviando query para Monday:"
-          echo "$QUERY"
-
-          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST https://api.monday.com/v2 \
-            -H "Authorization: $MONDAY_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data-raw "$QUERY")
-
-          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-          BODY=$(echo "$RESPONSE" | sed '$d')
-
-          echo "📊 HTTP Code: $HTTP_CODE"
-          echo "📊 Resposta da API (raw):"
-          echo "$BODY"
-
-          # Verificar se a resposta foi sucesso
-          if [ "$HTTP_CODE" -ne 200 ]; then
-            echo "❌ Erro HTTP ao consultar Monday (código $HTTP_CODE)"
-            exit 1
-          fi
-
-          # Verificar se tem items
-          if ! echo "$BODY" | jq -e '.data.boards[0].items' >/dev/null 2>&1; then
-            echo "❌ Não foi possível listar os itens da board. Resposta recebida:"
-            echo "$BODY"
-            exit 1
-          fi
-
-          ITEM_ID=$(echo "$BODY" | jq -r ".data.boards[0].items[]? | select(.name==\"$ITEM_NAME\") | .id")
-
-          if [[ -n "$ITEM_ID" && "$ITEM_ID" != "null" ]]; then
+          # 2️⃣ Atualiza ou cria
+          if [ -n "$ITEM_ID" ]; then
             echo "♻️ Atualizando item existente: $ITEM_ID"
-
-            UPDATE_MUTATION="{\"query\": \"mutation { change_multiple_column_values(board_id: $BOARD_ID, item_id: $ITEM_ID, column_values: \\\"{\\\\\\\"status\\\\\\\": {\\\\\\\"index\\\\\\\": 2}, \\\\\\\"text\\\\\\\": \\\\\\\"$SAFE_IMAGE_INFO\\\\\\\"}\\\") { id } }\"}"
-
-            echo "📤 Mutation de update:"
-            echo "$UPDATE_MUTATION"
-
-            UPDATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST https://api.monday.com/v2 \
-              -H "Authorization: $MONDAY_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data-raw "$UPDATE_MUTATION")
-
-            UPDATE_HTTP=$(echo "$UPDATE_RESPONSE" | tail -n1)
-            UPDATE_BODY=$(echo "$UPDATE_RESPONSE" | sed '$d')
-
-            echo "📊 HTTP Code (update): $UPDATE_HTTP"
-            echo "📝 Resposta do update:"
-            echo "$UPDATE_BODY" | jq . || echo "$UPDATE_BODY"
-
-            if ! echo "$UPDATE_BODY" | jq -e '.data.change_multiple_column_values.id' >/dev/null 2>&1; then
-              echo "❌ Erro ao atualizar item"
-              exit 1
-            fi
-
-            echo "✅ Item atualizado com sucesso!"
+            MUTATION=$(cat <<EOF
+          {"query":"mutation { change_multiple_column_values(board_id: $BOARD_ID, item_id: $ITEM_ID, column_values:{\"status\":{\"index\":2},\"text\":$SAFE_IMAGE_INFO}) { id } }"}
+          EOF
+          )
+            BODY=$(call_monday "$MUTATION")
+            echo "✅ Item atualizado com sucesso: $ITEM_ID"
 
           else
-            echo "🆕 Criando novo item no Monday.com..."
-
-            CREATE_MUTATION="{\"query\": \"mutation { create_item(board_id: $BOARD_ID, item_name: \\\"$SAFE_ITEM_NAME\\\", column_values: \\\"{\\\\\\\"status\\\\\\\": {\\\\\\\"index\\\\\\\": 2}, \\\\\\\"text\\\\\\\": \\\\\\\"$SAFE_IMAGE_INFO\\\\\\\"}\\\") { id } }\"}"
-
-            echo "📤 Mutation de create:"
-            echo "$CREATE_MUTATION"
-
-            CREATE_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST https://api.monday.com/v2 \
-              -H "Authorization: $MONDAY_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data-raw "$CREATE_MUTATION")
-
-            CREATE_HTTP=$(echo "$CREATE_RESPONSE" | tail -n1)
-            CREATE_BODY=$(echo "$CREATE_RESPONSE" | sed '$d')
-
-            echo "📊 HTTP Code (create): $CREATE_HTTP"
-            echo "📝 Resposta da criação:"
-            echo "$CREATE_BODY" | jq . || echo "$CREATE_BODY"
-
-            if ! echo "$CREATE_BODY" | jq -e '.data.create_item.id' >/dev/null 2>&1; then
-              echo "❌ Erro ao criar item"
-              exit 1
-            fi
-
-            NEW_ITEM_ID=$(echo "$CREATE_BODY" | jq -r '.data.create_item.id')
-            echo "✅ Item criado com sucesso! ID: $NEW_ITEM_ID"
+            echo "🆕 Criando novo item"
+            MUTATION=$(cat <<EOF
+          {"query":"mutation { create_item(board_id: $BOARD_ID, item_name: $SAFE_ITEM_NAME, column_values:{\"status\":{\"index\":2},\"text\":$SAFE_IMAGE_INFO}) { id } }"}
+          EOF
+          )
+            BODY=$(call_monday "$MUTATION")
+            NEW_ITEM_ID=$(echo "$BODY" | jq -r '.data.create_item.id')
+            echo "✅ Item criado com sucesso: $NEW_ITEM_ID"
           fi
 
-          echo "🎉 Monday.com integration completada!"
-
+          echo "🎉 Integração com Monday.com finalizada!"
