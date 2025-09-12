@@ -2,7 +2,7 @@ const express = require("express");
 const app = express();
 
 app.get("/", (req, res) => {
-  res.send("🚀 Testando o step do Monday");
+  res.send("🚀 Tarefa no Monday não pode ser duplicada, somente atualizar a imagem docker após o deploy no Rancher");
 });
 
 // Porta definida via variável de ambiente ou fallback para 9000
