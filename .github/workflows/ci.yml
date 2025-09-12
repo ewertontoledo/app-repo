@@ -226,4 +226,6 @@ jobs:
             echo "✅ Item criado com sucesso! ID: $NEW_ITEM_ID"
           fi
 
-          echo "🎉 Monday.com integration completada!"
+          echo "🎉 Monday.com integration completada!" 
+
+          
