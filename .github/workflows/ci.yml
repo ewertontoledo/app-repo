@@ -148,7 +148,6 @@ jobs:
 
           ITEM_NAME="Deploy Stage - $APP_NAME"
           IMAGE_INFO="Imagem: $IMAGE"
-          GITHUB_RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
           echo "🚀 Processando item: $ITEM_NAME"
 
@@ -156,13 +155,12 @@ jobs:
           json_escape() { jq -Rn --arg str "$1" '$str|@json'; }
           SAFE_ITEM_NAME=$(json_escape "$ITEM_NAME")
           SAFE_IMAGE_INFO=$(json_escape "$IMAGE_INFO")
-          SAFE_GITHUB_LINK=$(json_escape "$GITHUB_RUN_URL")
 
           # Função para enviar requisição e mostrar debug
           call_monday() {
             local payload="$1"
             RESPONSE=$(curl -s -w "\n%{http_code}" -X POST https://api.monday.com/v2 \
-              -H "Authorization: $MONDAY_API_TOKEN" \
+              -H "Authorization: Bearer $MONDAY_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data-raw "$payload")
             HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
@@ -186,21 +184,21 @@ jobs:
           }
 
           # 1️⃣ Listar itens do board
-          QUERY=$(jq -n '{query: "{ boards(ids: 10018892855) { items { id name column_values { id text } } } }"}')
+          QUERY=$(jq -n '{query: "{ boards(ids: 10018892855) { items_page(limit:10) { items { id name column_values { id text } } } } }"}')
           BODY=$(call_monday "$QUERY")
-          ITEM_ID=$(echo "$BODY" | jq -r ".data.boards[0].items[]? | select(.name==\"$ITEM_NAME\") | .id")
+          ITEM_ID=$(echo "$BODY" | jq -r ".data.boards[0].items_page.items[]? | select(.name==\"$ITEM_NAME\") | .id")
 
-          # 2️⃣ Upsert: atualiza ou cria usando IDs corretos
+          # 2️⃣ Upsert: atualiza ou cria
           if [ -n "$ITEM_ID" ]; then
             echo "♻️ Atualizando item existente: $ITEM_ID"
-            MUTATION=$(jq -n --arg id "$ITEM_ID" --arg text "$SAFE_IMAGE_INFO" --arg link "$SAFE_GITHUB_LINK" \
-              '{query: "mutation { change_multiple_column_values(board_id: 10018892855, item_id: \($id), column_values:{\"project_status\":{\"index\":2},\"text_mkvn9dqm\":\($text),\"link_mkvnmd7w\":\($link)}) { id } }"}')
+            MUTATION=$(jq -n --arg id "$ITEM_ID" --arg text "$SAFE_IMAGE_INFO" \
+              '{query: "mutation { change_multiple_column_values(board_id: 10018892855, item_id: \($id), column_values:{\"project_status\":{\"index\":2},\"text_mkvn9dqm\":\($text)}) { id } }"}')
             BODY=$(call_monday "$MUTATION")
             echo "✅ Item atualizado com sucesso: $ITEM_ID"
           else
             echo "🆕 Criando novo item"
-            MUTATION=$(jq -n --arg name "$SAFE_ITEM_NAME" --arg text "$SAFE_IMAGE_INFO" --arg link "$SAFE_GITHUB_LINK" \
-              '{query: "mutation { create_item(board_id: 10018892855, item_name: \($name), column_values:{\"project_status\":{\"index\":2},\"text_mkvn9dqm\":\($text),\"link_mkvnmd7w\":\($link)}) { id } }"}')
+            MUTATION=$(jq -n --arg name "$SAFE_ITEM_NAME" --arg text "$SAFE_IMAGE_INFO" \
+              '{query: "mutation { create_item(board_id: 10018892855, item_name: \($name), column_values:{\"project_status\":{\"index\":2},\"text_mkvn9dqm\":\($text)}) { id } }"}')
             BODY=$(call_monday "$MUTATION")
             NEW_ITEM_ID=$(echo "$BODY" | jq -r '.data.create_item.id')
             echo "✅ Item criado com sucesso: $NEW_ITEM_ID"
