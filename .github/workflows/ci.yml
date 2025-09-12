@@ -96,40 +96,6 @@ jobs:
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
           fi
       # --- Atualiza Fleet Repo ---
-      - name: Update Fleet repo manifests
-        if: success()
-        env:
-          FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
-          FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
-          FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
-          IMAGE: ${{ env.IMAGE }}
-          PORT: ${{ env.APP_PORT }}
-        run: |
-          set -euo pipefail
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          REPO_NO_PROTO="${FLEET_REPO#https://}"
-          CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
-          BRANCH="${FLEET_BRANCH:-main}"
-          git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
-          cd fleet-repo
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq jq
-          curl -sSL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
-          chmod +x yq
-          sudo mv yq /usr/local/bin/
-          MANIFEST="k8s/apps/${APP_NAME}/stage/deployment.yaml"
-          yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$MANIFEST"
-          yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$MANIFEST"
-          if git diff --quiet --exit-code; then
-            echo "✅ Nenhuma alteração detectada"
-          else
-            git add "$MANIFEST"
-            git commit -m "Atualiza imagem e porta para ${IMAGE}:${PORT} [ci skip]"
-            git push origin "${BRANCH}"
-            echo "✅ Manifest atualizado"
-          fi
-      # --- Create/Update Monday Item ---
       - name: Create/Update Monday Item
         if: success()
         env:
@@ -137,7 +103,7 @@ jobs:
           APP_NAME: ${{ env.APP_NAME }}
           IMAGE: ${{ env.IMAGE }}
           BOARD_ID: "10018892855"
-          STATUS_LABEL: "Não iniciado"  # pode ser alterado dinamicamente
+          STATUS_LABEL: "Não iniciado"
         run: |
           set -eo pipefail
 
@@ -147,10 +113,11 @@ jobs:
 
           # --- Função para escapar strings para GraphQL ---
           json_escape() { jq -Rn --arg str "$1" '$str|@json'; }
+          SAFE_ITEM_NAME=$(json_escape "$ITEM_NAME")
 
           # --- Verifica se o item já existe ---
           QUERY=$(jq -n --arg board_id "$BOARD_ID" --arg name "$ITEM_NAME" \
-            '{query: "query { items_page_by_column_values(board_id: \($board_id), columns: [{column_id:\"name\", column_values:[\($name)]}]) { items { id column_values { id text } } } }"}')
+            '{query: "query { items_page_by_column_values(board_id: \($board_id|tonumber), columns: [{column_id:\"name\", column_values:[\($name)]}]) { items { id column_values { id text } } } }"}')
 
           RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
             -H "Authorization: Bearer $MONDAY_API_TOKEN" \
@@ -163,14 +130,14 @@ jobs:
             | map(select(.id=="project_status"))[0].text // empty
           ')
 
-          # --- Cria ou atualiza ---
+          # --- Cria column_values para criação ou atualização ---
           COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" --arg status "$STATUS_LABEL" \
             '{project_status: {label: $status}, text_mkvn9dqm: $info}')
 
           if [ -n "$ITEM_ID" ]; then
             echo "🔄 Item já existe (ID: $ITEM_ID), atualizando Info e status..."
             UPDATE_PAYLOAD=$(jq -n --arg item_id "$ITEM_ID" --arg board_id "$BOARD_ID" --argjson colvals "$COLUMN_VALUES" \
-              '{query: "mutation { change_multiple_column_values(board_id: \($board_id|tonumber), item_id: \($item_id|tonumber), column_values: \($colvals|@json)) { id } }"}')
+              '{query: "mutation { change_multiple_column_values(board_id: \($board_id|tonumber), item_id: \($item_id|tonumber), column_values: \($colvals|@json)) { id name } }"}')
 
             curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: Bearer $MONDAY_API_TOKEN" \
@@ -183,16 +150,23 @@ jobs:
 
           else
             echo "➕ Item não existe, criando novo item..."
-            PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --argjson colvals "$COLUMN_VALUES" --argjson board_id "$BOARD_ID" \
-              '{query: "mutation { create_item(board_id: \($board_id), item_name: \($name), column_values: \($colvals|@json)) { id name } }"}')
+            CREATE_PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --arg board_id "$BOARD_ID" --argjson colvals "$COLUMN_VALUES" \
+              '{query: "mutation { create_item(board_id: \($board_id|tonumber), item_name: \($name), column_values: \($colvals|@json)) { id name } }"}')
 
             NEW_ITEM=$(curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: Bearer $MONDAY_API_TOKEN" \
               -H "Content-Type: application/json" \
-              --data-raw "$PAYLOAD" | jq '.')
+              --data-raw "$CREATE_PAYLOAD" | jq '.')
 
             NEW_ITEM_ID=$(echo "$NEW_ITEM" | jq -r '.data.create_item.id // empty')
-            echo "✅ Item criado com sucesso!"
-            echo "ID do Item: $NEW_ITEM_ID"
-            echo "Status inicial: $STATUS_LABEL"
+
+            if [ -n "$NEW_ITEM_ID" ]; then
+              echo "✅ Item criado com sucesso!"
+              echo "ID do Item: $NEW_ITEM_ID"
+              echo "Status inicial: $STATUS_LABEL"
+            else
+              echo "❌ Erro ao criar item no Monday:"
+              echo "$NEW_ITEM" | jq .
+              exit 1
+            fi
           fi
