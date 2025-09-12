@@ -96,6 +96,40 @@ jobs:
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
           fi
       # --- Atualiza Fleet Repo ---
+      - name: Update Fleet repo manifests
+        if: success()
+        env:
+          FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
+          FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
+          FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
+          IMAGE: ${{ env.IMAGE }}
+          PORT: ${{ env.APP_PORT }}
+        run: |
+          set -euo pipefail
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          REPO_NO_PROTO="${FLEET_REPO#https://}"
+          CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
+          BRANCH="${FLEET_BRANCH:-main}"
+          git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
+          cd fleet-repo
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq
+          curl -sSL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
+          chmod +x yq
+          sudo mv yq /usr/local/bin/
+          MANIFEST="k8s/apps/${APP_NAME}/stage/deployment.yaml"
+          yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$MANIFEST"
+          yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$MANIFEST"
+          if git diff --quiet --exit-code; then
+            echo "✅ Nenhuma alteração detectada"
+          else
+            git add "$MANIFEST"
+            git commit -m "Atualiza imagem e porta para ${IMAGE}:${PORT} [ci skip]"
+            git push origin "${BRANCH}"
+            echo "✅ Manifest atualizado"
+          fi
+      # --- Create/Update Monday Item ---
       - name: Create/Update Monday Item
         if: success()
         env:
@@ -111,25 +145,20 @@ jobs:
           IMAGE_INFO="Imagem: $IMAGE"
           echo "🚀 Verificando item: $ITEM_NAME"
 
-          # --- Função para escapar strings para GraphQL ---
-          json_escape() { jq -Rn --arg str "$1" '$str|@json'; }
-
           # --- Verifica se o item já existe pelo nome ---
           QUERY=$(jq -n --arg board_id "$BOARD_ID" --arg name "$ITEM_NAME" \
-            '{query: "query { items_page_by_column_values(board_id: \($board_id|tonumber), columns: [{column_id:\"name\", column_values:[\($name|@json)]}]) { items { id column_values { id text } } } }"}')
+            '{query: "query { items_page_by_column_values(board_id: \($board_id|tonumber), columns: [{column_id:\"name\", column_values:[\($name)]}]) { items { id column_values { id text } } } }"}')
 
           RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
             -H "Authorization: Bearer $MONDAY_API_TOKEN" \
             -H "Content-Type: application/json" \
             --data-raw "$QUERY")
 
-          # --- Extrai ID e status ---
           ITEM_ID=$(echo "$RESPONSE" | jq -r '.data.items_page_by_column_values.items[0].id // empty')
-          CURRENT_STATUS=$(echo "$RESPONSE" | jq -r '.data.items_page_by_column_values.items[0].column_values? // [] | map(select(.id=="project_status"))[0].text // empty')
 
-          # --- Valores das colunas como JSON válido ---
+          # --- Monta os valores das colunas como JSON válido ---
           COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" --arg status "$STATUS_LABEL" \
-            '{project_status: {label: $status}, text_mkvn9dqm: $info}' | jq -c)
+            '{project_status: {label: $status}, text_mkvn9dqm: $info}')
 
           if [ -n "$ITEM_ID" ]; then
             echo "🔄 Item já existe (ID: $ITEM_ID), atualizando Info e status..."
@@ -143,7 +172,6 @@ jobs:
 
             echo "📥 Resposta da API ao atualizar item:"
             echo "$UPDATE_RESPONSE" | jq .
-
             echo "✅ Item atualizado com sucesso!"
             echo "ID do Item: $ITEM_ID"
             echo "Status atual: $STATUS_LABEL"
