@@ -151,15 +151,12 @@ jobs:
 
           echo "🚀 Processando item: $ITEM_NAME"
 
-          # Escapa strings para JSON/GraphQL
+          # Função para escapar strings para JSON/GraphQL
           json_escape() { jq -Rn --arg str "$1" '$str|@json'; }
           SAFE_ITEM_NAME=$(json_escape "$ITEM_NAME")
           SAFE_IMAGE_INFO=$(json_escape "$IMAGE_INFO")
 
-          # Prepara column_values corretamente como JSON string
-          COLUMN_VALUES=$(jq -n --arg text "$IMAGE_INFO" '{project_status: {index: 2}, text_mkvn9dqm: $text }' | jq -c)
-
-          # Função para enviar requisição e mostrar debug
+          # Função para enviar requisição ao Monday
           call_monday() {
             local payload="$1"
             RESPONSE=$(curl -s -w "\n%{http_code}" -X POST https://api.monday.com/v2 \
@@ -186,22 +183,23 @@ jobs:
             echo "$BODY"
           }
 
-          # 1️⃣ Listar itens do board
-          QUERY=$(jq -n '{query: "{ boards(ids: 10018892855) { items { id name } } }"}')
+          # 1️⃣ Listar itens do board para ver se já existe
+          QUERY=$(jq -n --arg id "$BOARD_ID" \
+            '{query: "query { boards(ids: \($id)) { items { id name } } }"}')
           BODY=$(call_monday "$QUERY")
           ITEM_ID=$(echo "$BODY" | jq -r ".data.boards[0].items[]? | select(.name==\"$ITEM_NAME\") | .id")
 
-          # 2️⃣ Upsert: atualiza ou cria
+          # 2️⃣ Upsert: cria ou atualiza
           if [ -n "$ITEM_ID" ]; then
             echo "♻️ Atualizando item existente: $ITEM_ID"
-            MUTATION=$(jq -n --arg id "$ITEM_ID" --arg col_vals "$COLUMN_VALUES" \
-              '{query: "mutation { change_multiple_column_values(board_id: 10018892855, item_id: \($id), column_values: \($col_vals)) { id } }"}')
+            MUTATION=$(jq -n --arg id "$ITEM_ID" --arg text "$SAFE_IMAGE_INFO" \
+              '{query: "mutation { change_multiple_column_values(board_id: 10018892855, item_id: \($id), column_values: {\"project_status\":{\"index\":2},\"text_mkvn9dqm\":\($text)}) { id } }"}')
             BODY=$(call_monday "$MUTATION")
             echo "✅ Item atualizado com sucesso: $ITEM_ID"
           else
             echo "🆕 Criando novo item"
-            MUTATION=$(jq -n --arg name "$SAFE_ITEM_NAME" --arg col_vals "$COLUMN_VALUES" \
-              '{query: "mutation { create_item(board_id: 10018892855, item_name: \($name), column_values: \($col_vals)) { id } }"}')
+            MUTATION=$(jq -n --arg name "$SAFE_ITEM_NAME" --arg text "$SAFE_IMAGE_INFO" \
+              '{query: "mutation { create_item(board_id: 10018892855, item_name: \($name), column_values: {\"project_status\":{\"index\":2},\"text_mkvn9dqm\":\($text)}) { id } }"}')
             BODY=$(call_monday "$MUTATION")
             NEW_ITEM_ID=$(echo "$BODY" | jq -r '.data.create_item.id')
             echo "✅ Item criado com sucesso: $NEW_ITEM_ID"
