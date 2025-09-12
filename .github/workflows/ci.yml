@@ -131,52 +131,72 @@ jobs:
             echo "✅ Manifest atualizado"
           fi
 
-      - name: Create/Update Monday Item
+      - name: Monday Item Deploy Flow
         if: success()
         env:
           MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
           APP_NAME: ${{ env.APP_NAME }}
           IMAGE: ${{ env.IMAGE }}
           BOARD_ID: "10018892855"
+          STATUS_LABEL: "Não iniciado"
         run: |
           set -eo pipefail
-          STATUS_LABEL="${{ github.event.inputs.status }}"
+
           ITEM_NAME="Deploy Stage - $APP_NAME"
           IMAGE_INFO="Imagem: $IMAGE"
           echo "🚀 Verificando item: $ITEM_NAME"
-          json_escape() { jq -Rn --arg str "$1" '$str|@json'; }
+
+          # --- Valores das colunas como JSON válido ---
+          COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" --arg status "$STATUS_LABEL" \
+            '{project_status: {label: $status}, text_mkvn9dqm: $info}' | jq -c)
+
+          # --- Verifica se o item já existe ---
           QUERY=$(jq -n --arg board_id "$BOARD_ID" --arg name "$ITEM_NAME" \
-            '{query: "query { items_page_by_column_values(board_id: \($board_id|tonumber), columns: [{column_id:\"name\", column_values:[\($name|@json)]}]) { items { id column_values { id text } } } }"}')
+            '{query: "query { items_page_by_column_values(board_id: \($board_id), columns: [{column_id:\"name\", column_values:[\($name)]}]) { items { id column_values { id text } } } }"}')
+
           RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
             -H "Authorization: Bearer $MONDAY_API_TOKEN" \
             -H "Content-Type: application/json" \
             --data-raw "$QUERY")
+
           ITEM_ID=$(echo "$RESPONSE" | jq -r '.data.items_page_by_column_values.items[0].id // empty')
-          COLUMN_VALUES_JSON=$(jq -n --arg info "$IMAGE_INFO" --arg status "$STATUS_LABEL" \
-            '{project_status: {label: $status}, text_mkvn9dqm: $info}' | jq -c | json_escape)
+
           if [ -n "$ITEM_ID" ]; then
             echo "🔄 Item já existe (ID: $ITEM_ID), atualizando Info e status..."
-            UPDATE_PAYLOAD=$(jq -n --arg item_id "$ITEM_ID" --arg board_id "$BOARD_ID" --arg colvals "$COLUMN_VALUES_JSON" \
-              '{query: "mutation { change_multiple_column_values(board_id: \($board_id|tonumber), item_id: \($item_id|tonumber), column_values: \($colvals)) { id } }"}')
+            UPDATE_PAYLOAD=$(jq -n --arg item_id "$ITEM_ID" --arg board_id "$BOARD_ID" --argjson colvals "$COLUMN_VALUES" \
+              '{query: "mutation { change_multiple_column_values(board_id: \($board_id), item_id: \($item_id), column_values: \($colvals)) { id } }"}')
+
             UPDATE_RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: Bearer $MONDAY_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data-raw "$UPDATE_PAYLOAD")
+
+            echo "📥 Resposta da API ao atualizar item:"
             echo "$UPDATE_RESPONSE" | jq .
             echo "✅ Item atualizado com sucesso!"
+            echo "ID do Item: $ITEM_ID"
+            echo "Status atual: $STATUS_LABEL"
           else
             echo "➕ Item não existe, criando novo item..."
-            CREATE_PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --arg board_id "$BOARD_ID" --arg colvals "$COLUMN_VALUES_JSON" \
+            CREATE_PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --arg board_id "$BOARD_ID" --argjson colvals "$COLUMN_VALUES" \
               '{query: "mutation { create_item(board_id: \($board_id), item_name: \($name), column_values: \($colvals)) { id name } }"}')
+
             NEW_ITEM=$(curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: Bearer $MONDAY_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data-raw "$CREATE_PAYLOAD")
+
+            echo "📥 Resposta da API ao criar item:"
             echo "$NEW_ITEM" | jq .
+
             NEW_ITEM_ID=$(echo "$NEW_ITEM" | jq -r '.data.create_item.id // empty')
+
             if [ -z "$NEW_ITEM_ID" ]; then
-              echo "❌ Erro: não foi possível criar o item no Monday."
+              echo "❌ Erro: não foi possível criar o item no Monday. Confira os logs acima."
               exit 1
             fi
+
             echo "✅ Item criado com sucesso!"
+            echo "ID do Item: $NEW_ITEM_ID"
+            echo "Status inicial: $STATUS_LABEL"
           fi
