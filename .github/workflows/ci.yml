@@ -140,13 +140,14 @@ jobs:
           ITEM_NAME="Deploy Stage - $APP_NAME"
           echo "🚀 Criando item: $ITEM_NAME"
 
-          curl -X POST https://api.monday.com/v2 \
+          # JSON seguro com jq
+          PAYLOAD=$(jq -n --arg board_id "$BOARD_ID" --arg item_name "$ITEM_NAME" \
+            '{query: "mutation { create_item(board_id: \($board_id), item_name: \($item_name)) { id name } }"}')
+
+          curl -s -X POST https://api.monday.com/v2 \
             -H "Authorization: $MONDAY_API_TOKEN" \
             -H "Content-Type: application/json" \
-            --data-raw @- <<EOF
-          {
-            "query": "mutation { create_item(board_id: $BOARD_ID, item_name: \"$ITEM_NAME\") { id name } }"
-          }
-          EOF
+            --data-raw "$PAYLOAD" | jq .
 
           echo "✅ Item criado com sucesso!"
+
