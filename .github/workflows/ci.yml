@@ -130,64 +130,65 @@ jobs:
             echo "✅ Manifest atualizado"
           fi
       # --- Create/Update Monday Item ---
-      - name: Create/Update Monday Item
-        if: success()
-        env:
-          MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
-          APP_NAME: ${{ env.APP_NAME }}
-          IMAGE: ${{ env.IMAGE }}
-          BOARD_ID: "10018892855"
-        run: |
-          set -eo pipefail
-          
-          ITEM_NAME="Deploy Stage - $APP_NAME"
-          IMAGE_INFO="Imagem: $IMAGE"
-
-          echo "🚀 Verificando item: $ITEM_NAME"
-
-          # 1. Busca se já existe item com esse nome
-          QUERY=$(jq -n --arg board_id "$BOARD_ID" --arg name "$ITEM_NAME" \
-            '{query: "query { items_page_by_column_values(board_id: \($board_id), columns: [{column_id: \"name\", column_values: [\($name)]}]) { items { id name column_values { id text } } } }"}')
-
-          RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
-            -H "Authorization: Bearer $MONDAY_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data-raw "$QUERY")
-
-          ITEM_ID=$(echo "$RESPONSE" | jq -r '.data.items_page_by_column_values.items[0].id // empty')
-          CURRENT_STATUS=$(echo "$RESPONSE" | jq -r '
-            .data.items_page_by_column_values.items[0].column_values? // [] 
-            | map(select(.id=="project_status"))[0].text // empty
-          ')
-
-          if [ -z "$ITEM_ID" ]; then
-            echo "➕ Item não existe, criando no status 'Não iniciado'..."
-            COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" \
-              '{project_status: {label: "Não iniciado"}, text_mkvn9dqm: $info}' | jq -c)
+        - name: Create/Update Monday Item
+          if: success()
+          env:
+            MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
+            APP_NAME: ${{ env.APP_NAME }}
+            IMAGE: ${{ env.IMAGE }}
+            BOARD_ID: "10018892855"
+          run: |
+            set -eo pipefail
             
-            COLUMN_VALUES_ESCAPED=$(printf '%s' "$COLUMN_VALUES" | sed 's/"/\\"/g')
-            
-            PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --arg colvals "$COLUMN_VALUES_ESCAPED" \
-              --argjson board_id "$BOARD_ID" \
-              '{query: "mutation { create_item(board_id: \($board_id), item_name: \($name), column_values: \"\($colvals)\") { id name } }"}')
+            ITEM_NAME="Deploy Stage - $APP_NAME"
+            IMAGE_INFO="Imagem: $IMAGE"
 
-            curl -s -X POST https://api.monday.com/v2 \
+            echo "🚀 Verificando item: $ITEM_NAME"
+
+            # 1. Busca se já existe item com esse nome
+            QUERY=$(jq -n --arg board_id "$BOARD_ID" --arg name "$ITEM_NAME" \
+              '{query: "query { items_page_by_column_values(board_id: \($board_id), columns: [{column_id: \"name\", column_values: [\($name)]}]) { items { id name column_values { id text } } } }"}')
+
+            RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: Bearer $MONDAY_API_TOKEN" \
               -H "Content-Type: application/json" \
-              --data-raw "$PAYLOAD" | jq .
+              --data-raw "$QUERY")
 
-          else
-            if [ "$CURRENT_STATUS" = "Em Correção" ]; then
-              echo "🔄 Item já existe em 'Em Correção', atualizando apenas imagem..."
-              
-              UPDATE_PAYLOAD=$(jq -n --arg item_id "$ITEM_ID" --arg board_id "$BOARD_ID" --arg info "$IMAGE_INFO" \
-                '{query: "mutation { change_simple_column_value(board_id: \($board_id|tonumber), item_id: \($item_id|tonumber), column_id: \"text_mkvn9dqm\", value: \($info|@json)) { id } }"}')
+            ITEM_ID=$(echo "$RESPONSE" | jq -r '.data.items_page_by_column_values.items[0].id // empty')
+            CURRENT_STATUS=$(echo "$RESPONSE" | jq -r '
+              .data.items_page_by_column_values.items[0].column_values? // [] 
+              | map(select(.id=="project_status"))[0].text // empty
+            ')
+
+            if [ -z "$ITEM_ID" ]; then
+              echo "➕ Item não existe, criando no status 'Não iniciado'..."
+
+              # COLUMN_VALUES como JSON direto
+              COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" \
+                '{project_status: {label: "Não iniciado"}, text_mkvn9dqm: $info}')
+
+              # Criando payload usando @json para converter JSON em string
+              PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --argjson colvals "$COLUMN_VALUES" --argjson board_id "$BOARD_ID" \
+                '{query: "mutation { create_item(board_id: \($board_id), item_name: \($name), column_values: \($colvals|@json)) { id name } }"}')
 
               curl -s -X POST https://api.monday.com/v2 \
                 -H "Authorization: Bearer $MONDAY_API_TOKEN" \
                 -H "Content-Type: application/json" \
-                --data-raw "$UPDATE_PAYLOAD" | jq .
+                --data-raw "$PAYLOAD" | jq .
+
             else
-              echo "✅ Item já existe no status '$CURRENT_STATUS', nada a fazer."
+              if [ "$CURRENT_STATUS" = "Em Correção" ]; then
+                echo "🔄 Item já existe em 'Em Correção', atualizando apenas imagem..."
+
+                # Atualizando valor usando @json para evitar parsing error
+                UPDATE_PAYLOAD=$(jq -n --arg item_id "$ITEM_ID" --arg board_id "$BOARD_ID" --arg info "$IMAGE_INFO" \
+                  '{query: "mutation { change_simple_column_value(board_id: \($board_id|tonumber), item_id: \($item_id|tonumber), column_id: \"text_mkvn9dqm\", value: \($info|@json)) { id } }"}')
+
+                curl -s -X POST https://api.monday.com/v2 \
+                  -H "Authorization: Bearer $MONDAY_API_TOKEN" \
+                  -H "Content-Type: application/json" \
+                  --data-raw "$UPDATE_PAYLOAD" | jq .
+              else
+                echo "✅ Item já existe no status '$CURRENT_STATUS', nada a fazer."
+              fi
             fi
-          fi
