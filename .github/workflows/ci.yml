@@ -144,6 +144,8 @@ jobs:
           IMAGE: ${{ env.IMAGE }}
           BOARD_ID: "10018892855"
         run: |
+          set -eo pipefail
+
           ITEM_NAME="Deploy Stage - $APP_NAME"
           IMAGE_INFO="Imagem: $IMAGE"
 
@@ -154,18 +156,23 @@ jobs:
           SAFE_ITEM_NAME=$(json_escape "$ITEM_NAME")
           SAFE_IMAGE_INFO=$(json_escape "$IMAGE_INFO")
 
-          # Cria column_values como JSON escapado como string
-          COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" '{project_status: {index: 2}, text_mkvn9dqm: $info}' | jq -c | jq -R)
+          # Cria column_values como JSON
+          COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" '{project_status: {index: 2}, text_mkvn9dqm: $info}' | jq -c)
+
+          # Escapa aspas para GraphQL
+          ESCAPED_COLUMN_VALUES=$(echo "$COLUMN_VALUES" | sed 's/"/\\"/g')
 
           # Payload final para GraphQL
-          PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --arg colvals "$COLUMN_VALUES" \
-            '{query: "mutation { create_item(board_id: 10018892855, item_name: \($name), column_values: \($colvals)) { id name } }"}')
+          PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --arg colvals "$ESCAPED_COLUMN_VALUES" \
+            '{query: "mutation { create_item(board_id: 10018892855, item_name: \($name), column_values: \"\($colvals)\") { id name } }"}')
 
           # Chamada à API
-          curl -s -X POST https://api.monday.com/v2 \
+          RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
             -H "Authorization: Bearer $MONDAY_API_TOKEN" \
             -H "Content-Type: application/json" \
-            --data-raw "$PAYLOAD" | jq .
+            --data-raw "$PAYLOAD")
+
+          echo "📥 Resposta da API:"
+          echo "$RESPONSE" | jq .
 
           echo "✅ Item criado com sucesso!"
-
