@@ -145,12 +145,12 @@ jobs:
 
           echo "🚀 Processando item: $ITEM_NAME"
 
-          # Escapa strings para JSON/GraphQL
+          # Função para escapar strings para JSON/GraphQL
           json_escape() { jq -Rn --arg str "$1" '$str|@json'; }
           SAFE_ITEM_NAME=$(json_escape "$ITEM_NAME")
           SAFE_IMAGE_INFO=$(json_escape "$IMAGE_INFO")
 
-          # Função para enviar requisição e debug
+          # Função para enviar requisição e mostrar debug
           call_monday() {
             local payload="$1"
             RESPONSE=$(curl -s -w "\n%{http_code}" -X POST https://api.monday.com/v2 \
@@ -177,8 +177,8 @@ jobs:
             echo "$BODY"
           }
 
-          # 1️⃣ Listagem de itens do board
-          QUERY=$(jq -n '{query:"{ boards(ids: 10018892855) { items { id name column_values { id text } } } }"}')
+          # 1️⃣ Listar itens do board
+          QUERY=$(jq -n '{query: "{ boards(ids: 10018892855) { items { id name column_values { id text } } } }"}')
           BODY=$(call_monday "$QUERY")
           ITEM_ID=$(echo "$BODY" | jq -r ".data.boards[0].items[]? | select(.name==\"$ITEM_NAME\") | .id")
 
