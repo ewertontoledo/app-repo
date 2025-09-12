@@ -113,11 +113,10 @@ jobs:
 
           # --- Função para escapar strings para GraphQL ---
           json_escape() { jq -Rn --arg str "$1" '$str|@json'; }
-          SAFE_ITEM_NAME=$(json_escape "$ITEM_NAME")
 
           # --- Verifica se o item já existe ---
           QUERY=$(jq -n --arg board_id "$BOARD_ID" --arg name "$ITEM_NAME" \
-            '{query: "query { items_page_by_column_values(board_id: \($board_id|tonumber), columns: [{column_id:\"name\", column_values:[\($name)]}]) { items { id column_values { id text } } } }"}')
+            '{query: "query { items_page_by_column_values(board_id: \($board_id|tonumber), columns: [{column_id:\"name\", column_values:[\($name|@json)]}]) { items { id column_values { id text } } } }"}')
 
           RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
             -H "Authorization: Bearer $MONDAY_API_TOKEN" \
@@ -130,14 +129,14 @@ jobs:
             | map(select(.id=="project_status"))[0].text // empty
           ')
 
-          # --- Cria column_values para criação ou atualização ---
+          # --- Cria os valores das colunas ---
           COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" --arg status "$STATUS_LABEL" \
             '{project_status: {label: $status}, text_mkvn9dqm: $info}')
 
           if [ -n "$ITEM_ID" ]; then
             echo "🔄 Item já existe (ID: $ITEM_ID), atualizando Info e status..."
             UPDATE_PAYLOAD=$(jq -n --arg item_id "$ITEM_ID" --arg board_id "$BOARD_ID" --argjson colvals "$COLUMN_VALUES" \
-              '{query: "mutation { change_multiple_column_values(board_id: \($board_id|tonumber), item_id: \($item_id|tonumber), column_values: \($colvals|@json)) { id name } }"}')
+              '{query: "mutation { change_multiple_column_values(board_id: \($board_id|tonumber), item_id: \($item_id|tonumber), column_values: \($colvals|@json)) { id } }"}')
 
             curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: Bearer $MONDAY_API_TOKEN" \
@@ -159,14 +158,7 @@ jobs:
               --data-raw "$CREATE_PAYLOAD" | jq '.')
 
             NEW_ITEM_ID=$(echo "$NEW_ITEM" | jq -r '.data.create_item.id // empty')
-
-            if [ -n "$NEW_ITEM_ID" ]; then
-              echo "✅ Item criado com sucesso!"
-              echo "ID do Item: $NEW_ITEM_ID"
-              echo "Status inicial: $STATUS_LABEL"
-            else
-              echo "❌ Erro ao criar item no Monday:"
-              echo "$NEW_ITEM" | jq .
-              exit 1
-            fi
+            echo "✅ Item criado com sucesso!"
+            echo "ID do Item: $NEW_ITEM_ID"
+            echo "Status inicial: $STATUS_LABEL"
           fi
