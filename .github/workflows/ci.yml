@@ -155,7 +155,10 @@ jobs:
             --data-raw "$QUERY")
 
           ITEM_ID=$(echo "$RESPONSE" | jq -r '.data.items_page_by_column_values.items[0].id // empty')
-          CURRENT_STATUS=$(echo "$RESPONSE" | jq -r '.data.items_page_by_column_values.items[0].column_values[] | select(.id=="project_status") | .text // empty')
+          CURRENT_STATUS=$(echo "$RESPONSE" | jq -r '
+            .data.items_page_by_column_values.items[0].column_values? // [] 
+            | map(select(.id=="project_status"))[0].text // empty
+          ')
 
           if [ -z "$ITEM_ID" ]; then
             echo "➕ Item não existe, criando no status 'Não iniciado'..."
