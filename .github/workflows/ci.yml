@@ -45,6 +45,7 @@ jobs:
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
           fi
+
       # --- Instalar Trivy ---
       - name: Install Trivy
         run: |
@@ -54,6 +55,7 @@ jobs:
           echo "$HOME/bin" >> $GITHUB_PATH
           export PATH="$HOME/bin:$PATH"
           trivy --version
+
       # --- Trivy Scan ---
       - name: Criar diretório para relatório Trivy
         run: mkdir -p trivy-reports
@@ -65,6 +67,7 @@ jobs:
           trivy image --severity HIGH,CRITICAL --exit-code 1 \
             --format json -o trivy-reports/trivy-report.json \
             "${IMAGE}"
+
       # --- Mostrar resumo no log ---
       - name: Show Trivy JSON summary in log
         if: always()
@@ -75,6 +78,7 @@ jobs:
           else
             echo "✅ Relatório não encontrado"
           fi
+
       # --- Upload Artifact ---
       - name: Upload Trivy report
         if: always()
@@ -95,6 +99,7 @@ jobs:
             PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${APP_NAME}'.\\n🔗 Relatório disponível em: ${REPORT_URL}\"}"
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
           fi
+
       # --- Atualiza Fleet Repo ---
       - name: Update Fleet repo manifests
         if: success()
@@ -102,7 +107,7 @@ jobs:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
           FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
-          IMAGE: ${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/stage/image/${{ env.APP_NAME }}:${{ github.sha }}
+          IMAGE: ${{ env.IMAGE }}
           PORT: ${{ env.APP_PORT }}
         run: |
           set -euo pipefail
@@ -129,73 +134,76 @@ jobs:
             git push origin "${BRANCH}"
             echo "✅ Manifest atualizado"
           fi
-      
-        - name: Create/Update Monday Item
-          if: success()
-          env:
-            MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
-            APP_NAME: ${{ env.APP_NAME }}
-            IMAGE: ${{ env.IMAGE }}
-            BOARD_ID: "10018892855"
-          run: |
-            set -eo pipefail
 
-            ITEM_NAME="Deploy Stage - $APP_NAME"
-            IMAGE_INFO="Imagem: $IMAGE"
+      # --- Create/Update Monday Item ---
+      - name: Create/Update Monday Item
+        if: success()
+        env:
+          MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
+          APP_NAME: ${{ env.APP_NAME }}
+          IMAGE: ${{ env.IMAGE }}
+          BOARD_ID: "10018892855"
+        run: |
+          set -eo pipefail
 
-            echo "🚀 Processando item: $ITEM_NAME"
+          ITEM_NAME="Deploy Stage - $APP_NAME"
+          IMAGE_INFO="Imagem: $IMAGE"
+          GITHUB_RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-            # Escapa strings para JSON/GraphQL
-            json_escape() { jq -Rn --arg str "$1" '$str|@json'; }
-            SAFE_ITEM_NAME=$(json_escape "$ITEM_NAME")
-            SAFE_IMAGE_INFO=$(json_escape "$IMAGE_INFO")
+          echo "🚀 Processando item: $ITEM_NAME"
 
-            # Função para enviar requisição e mostrar debug
-            call_monday() {
-              local payload="$1"
-              RESPONSE=$(curl -s -w "\n%{http_code}" -X POST https://api.monday.com/v2 \
-                -H "Authorization: $MONDAY_API_TOKEN" \
-                -H "Content-Type: application/json" \
-                --data-raw "$payload")
-              HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-              BODY=$(echo "$RESPONSE" | sed '$d')
+          # Escapa strings para JSON/GraphQL
+          json_escape() { jq -Rn --arg str "$1" '$str|@json'; }
+          SAFE_ITEM_NAME=$(json_escape "$ITEM_NAME")
+          SAFE_IMAGE_INFO=$(json_escape "$IMAGE_INFO")
+          SAFE_GITHUB_LINK=$(json_escape "$GITHUB_RUN_URL")
 
-              echo "📤 Payload enviado:"
-              echo "$payload" | jq . || echo "$payload"
-              echo "📥 HTTP Code: $HTTP_CODE"
-              echo "📥 Resposta da API:"
-              echo "$BODY" | jq . || echo "$BODY"
+          # Função para enviar requisição e mostrar debug
+          call_monday() {
+            local payload="$1"
+            RESPONSE=$(curl -s -w "\n%{http_code}" -X POST https://api.monday.com/v2 \
+              -H "Authorization: $MONDAY_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data-raw "$payload")
+            HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+            BODY=$(echo "$RESPONSE" | sed '$d')
 
-              if [ "$HTTP_CODE" -ne 200 ]; then
-                echo "❌ HTTP $HTTP_CODE"
-                exit 1
-              fi
-              if echo "$BODY" | jq -e '.errors' >/dev/null; then
-                echo "❌ API Error: $(echo $BODY | jq .errors)"
-                exit 1
-              fi
-              echo "$BODY"
-            }
+            echo "📤 Payload enviado:"
+            echo "$payload" | jq . || echo "$payload"
+            echo "📥 HTTP Code: $HTTP_CODE"
+            echo "📥 Resposta da API:"
+            echo "$BODY" | jq . || echo "$BODY"
 
-            # 1️⃣ Listar itens do board
-            QUERY=$(jq -n '{query: "{ boards(ids: 10018892855) { items { id name column_values { id text } } } }"}')
-            BODY=$(call_monday "$QUERY")
-            ITEM_ID=$(echo "$BODY" | jq -r ".data.boards[0].items[]? | select(.name==\"$ITEM_NAME\") | .id")
-
-            # 2️⃣ Upsert: atualiza ou cria usando os IDs corretos das colunas
-            if [ -n "$ITEM_ID" ]; then
-              echo "♻️ Atualizando item existente: $ITEM_ID"
-              MUTATION=$(jq -n --arg id "$ITEM_ID" --arg text "$SAFE_IMAGE_INFO" \
-                '{query: "mutation { change_multiple_column_values(board_id: 10018892855, item_id: \($id), column_values:{\"project_status\":{\"index\":2},\"text_mkvn9dqm\":\($text)}) { id } }"}')
-              BODY=$(call_monday "$MUTATION")
-              echo "✅ Item atualizado com sucesso: $ITEM_ID"
-            else
-              echo "🆕 Criando novo item"
-              MUTATION=$(jq -n --arg name "$SAFE_ITEM_NAME" --arg text "$SAFE_IMAGE_INFO" \
-                '{query: "mutation { create_item(board_id: 10018892855, item_name: \($name), column_values:{\"project_status\":{\"index\":2},\"text_mkvn9dqm\":\($text)}) { id } }"}')
-              BODY=$(call_monday "$MUTATION")
-              NEW_ITEM_ID=$(echo "$BODY" | jq -r '.data.create_item.id')
-              echo "✅ Item criado com sucesso: $NEW_ITEM_ID"
+            if [ "$HTTP_CODE" -ne 200 ]; then
+              echo "❌ HTTP $HTTP_CODE"
+              exit 1
             fi
+            if echo "$BODY" | jq -e '.errors' >/dev/null; then
+              echo "❌ API Error: $(echo $BODY | jq .errors)"
+              exit 1
+            fi
+            echo "$BODY"
+          }
 
-            echo "🎉 Integração com Monday.com finalizada!"
+          # 1️⃣ Listar itens do board
+          QUERY=$(jq -n '{query: "{ boards(ids: 10018892855) { items { id name column_values { id text } } } }"}')
+          BODY=$(call_monday "$QUERY")
+          ITEM_ID=$(echo "$BODY" | jq -r ".data.boards[0].items[]? | select(.name==\"$ITEM_NAME\") | .id")
+
+          # 2️⃣ Upsert: atualiza ou cria usando IDs corretos
+          if [ -n "$ITEM_ID" ]; then
+            echo "♻️ Atualizando item existente: $ITEM_ID"
+            MUTATION=$(jq -n --arg id "$ITEM_ID" --arg text "$SAFE_IMAGE_INFO" --arg link "$SAFE_GITHUB_LINK" \
+              '{query: "mutation { change_multiple_column_values(board_id: 10018892855, item_id: \($id), column_values:{\"project_status\":{\"index\":2},\"text_mkvn9dqm\":\($text),\"link_mkvnmd7w\":\($link)}) { id } }"}')
+            BODY=$(call_monday "$MUTATION")
+            echo "✅ Item atualizado com sucesso: $ITEM_ID"
+          else
+            echo "🆕 Criando novo item"
+            MUTATION=$(jq -n --arg name "$SAFE_ITEM_NAME" --arg text "$SAFE_IMAGE_INFO" --arg link "$SAFE_GITHUB_LINK" \
+              '{query: "mutation { create_item(board_id: 10018892855, item_name: \($name), column_values:{\"project_status\":{\"index\":2},\"text_mkvn9dqm\":\($text),\"link_mkvnmd7w\":\($link)}) { id } }"}')
+            BODY=$(call_monday "$MUTATION")
+            NEW_ITEM_ID=$(echo "$BODY" | jq -r '.data.create_item.id')
+            echo "✅ Item criado com sucesso: $NEW_ITEM_ID"
+          fi
+
+          echo "🎉 Integração com Monday.com finalizada!"
