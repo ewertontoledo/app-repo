@@ -154,9 +154,8 @@ jobs:
           SAFE_ITEM_NAME=$(json_escape "$ITEM_NAME")
           SAFE_IMAGE_INFO=$(json_escape "$IMAGE_INFO")
 
-          # Cria column_values como JSON seguro
-          COLUMN_VALUES=$(jq -n --arg status_index 2 --arg info "$IMAGE_INFO" \
-            '{project_status: {index: ($status_index|tonumber)}, text_mkvn9dqm: $info}' | jq -c .)
+          # Cria column_values como JSON escapado como string
+          COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" '{project_status: {index: 2}, text_mkvn9dqm: $info}' | jq -c | jq -R)
 
           # Payload final para GraphQL
           PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --arg colvals "$COLUMN_VALUES" \
