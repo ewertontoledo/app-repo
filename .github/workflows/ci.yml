@@ -147,7 +147,7 @@ jobs:
 
           # --- Verifica se o item já existe pelo nome ---
           QUERY=$(jq -n --arg board_id "$BOARD_ID" --arg name "$ITEM_NAME" \
-            '{query: "query { items_page_by_column_values(board_id: \($board_id|tonumber), columns: [{column_id:\"name\", column_values:[\($name)]}]) { items { id column_values { id text } } } }"}')
+            '{query: "query { items_page_by_column_values(board_id: \($board_id), columns: [{column_id:\"name\", column_values:[\($name)]}]) { items { id column_values { id text } } } }"}')
 
           RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
             -H "Authorization: Bearer $MONDAY_API_TOKEN" \
@@ -156,14 +156,14 @@ jobs:
 
           ITEM_ID=$(echo "$RESPONSE" | jq -r '.data.items_page_by_column_values.items[0].id // empty')
 
-          # --- Monta os valores das colunas como JSON válido ---
+          # --- Valores das colunas como JSON literal ---
           COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" --arg status "$STATUS_LABEL" \
             '{project_status: {label: $status}, text_mkvn9dqm: $info}')
 
           if [ -n "$ITEM_ID" ]; then
             echo "🔄 Item já existe (ID: $ITEM_ID), atualizando Info e status..."
             UPDATE_PAYLOAD=$(jq -n --arg item_id "$ITEM_ID" --arg board_id "$BOARD_ID" --argjson colvals "$COLUMN_VALUES" \
-              '{query: "mutation { change_multiple_column_values(board_id: \($board_id|tonumber), item_id: \($item_id|tonumber), column_values: \($colvals)) { id } }"}')
+              '{query: "mutation { change_multiple_column_values(board_id: \($board_id), item_id: \($item_id), column_values: \($colvals)) { id } }"}')
 
             UPDATE_RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: Bearer $MONDAY_API_TOKEN" \
@@ -179,7 +179,7 @@ jobs:
           else
             echo "➕ Item não existe, criando novo item..."
             CREATE_PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --arg board_id "$BOARD_ID" --argjson colvals "$COLUMN_VALUES" \
-              '{query: "mutation { create_item(board_id: \($board_id|tonumber), item_name: \($name), column_values: \($colvals)) { id name } }"}')
+              '{query: "mutation { create_item(board_id: \($board_id), item_name: \($name), column_values: \($colvals)) { id name } }"}')
 
             NEW_ITEM=$(curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: Bearer $MONDAY_API_TOKEN" \
