@@ -4,6 +4,11 @@ on:
   push:
     branches: [ "stage" ]
   workflow_dispatch:
+    inputs:
+      status:
+        description: 'Status do deploy'
+        required: true
+        default: 'Não iniciado'
 
 jobs:
   build-and-push:
@@ -14,7 +19,6 @@ jobs:
       TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
 
     steps:
-      # --- Checkout ---
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -24,7 +28,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
-      # --- Login OCIR ---
       - name: Login to OCIR
         uses: docker/login-action@v2
         with:
@@ -32,7 +35,6 @@ jobs:
           username: ${{ secrets.OCIR_USERNAME }}
           password: ${{ secrets.OCIR_AUTH_TOKEN }}
 
-      # --- Build & Push Image ---
       - name: Build and push image if not exists
         run: |
           IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/stage/image/${APP_NAME}:${{ github.sha }}"
@@ -45,7 +47,7 @@ jobs:
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
           fi
-      # --- Instalar Trivy ---
+
       - name: Install Trivy
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
@@ -54,7 +56,7 @@ jobs:
           echo "$HOME/bin" >> $GITHUB_PATH
           export PATH="$HOME/bin:$PATH"
           trivy --version
-      # --- Trivy Scan ---
+
       - name: Criar diretório para relatório Trivy
         run: mkdir -p trivy-reports
 
@@ -65,7 +67,7 @@ jobs:
           trivy image --severity HIGH,CRITICAL --exit-code 1 \
             --format json -o trivy-reports/trivy-report.json \
             "${IMAGE}"
-      # --- Mostrar resumo no log ---
+
       - name: Show Trivy JSON summary in log
         if: always()
         run: |
@@ -75,7 +77,7 @@ jobs:
           else
             echo "✅ Relatório não encontrado"
           fi
-      # --- Upload Artifact ---
+
       - name: Upload Trivy report
         if: always()
         uses: actions/upload-artifact@v4
@@ -83,7 +85,6 @@ jobs:
           name: trivy-report
           path: trivy-reports/trivy-report.json
 
-      # --- Notificação Teams apenas se falhar ---
       - name: Notify Teams on Trivy failure
         if: failure()
         run: |
@@ -95,7 +96,7 @@ jobs:
             PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${APP_NAME}'.\\n🔗 Relatório disponível em: ${REPORT_URL}\"}"
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
           fi
-      # --- Atualiza Fleet Repo ---
+
       - name: Update Fleet repo manifests
         if: success()
         env:
@@ -129,95 +130,53 @@ jobs:
             git push origin "${BRANCH}"
             echo "✅ Manifest atualizado"
           fi
-      # --- Create/Update Monday Item ---
-      - name: Monday Item Deploy Flow
-
-      on:
-        workflow_dispatch:
-          inputs:
-            status:
-              description: 'Status do deploy'
-              required: true
-              default: 'Não iniciado'
-
-      jobs:
-        monday_item:
-          runs-on: ubuntu-latest
-          env:
-            MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
-            APP_NAME: ${{ env.APP_NAME }}
-            IMAGE: ${{ env.IMAGE }}
-            BOARD_ID: "10018892855"
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: Create/Update Monday Item
+        if: success()
+        env:
+          MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
+          APP_NAME: ${{ env.APP_NAME }}
+          IMAGE: ${{ env.IMAGE }}
+          BOARD_ID: "10018892855"
         run: |
           set -eo pipefail
-
           STATUS_LABEL="${{ github.event.inputs.status }}"
           ITEM_NAME="Deploy Stage - $APP_NAME"
           IMAGE_INFO="Imagem: $IMAGE"
           echo "🚀 Verificando item: $ITEM_NAME"
-
-          # --- Função para escapar strings para GraphQL ---
           json_escape() { jq -Rn --arg str "$1" '$str|@json'; }
-
-          # --- Verifica se o item já existe pelo nome ---
           QUERY=$(jq -n --arg board_id "$BOARD_ID" --arg name "$ITEM_NAME" \
             '{query: "query { items_page_by_column_values(board_id: \($board_id|tonumber), columns: [{column_id:\"name\", column_values:[\($name|@json)]}]) { items { id column_values { id text } } } }"}')
-
           RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
             -H "Authorization: Bearer $MONDAY_API_TOKEN" \
             -H "Content-Type: application/json" \
             --data-raw "$QUERY")
-
           ITEM_ID=$(echo "$RESPONSE" | jq -r '.data.items_page_by_column_values.items[0].id // empty')
-
-          # --- Valores das colunas como STRING JSON ---
           COLUMN_VALUES_JSON=$(jq -n --arg info "$IMAGE_INFO" --arg status "$STATUS_LABEL" \
             '{project_status: {label: $status}, text_mkvn9dqm: $info}' | jq -c | json_escape)
-
           if [ -n "$ITEM_ID" ]; then
             echo "🔄 Item já existe (ID: $ITEM_ID), atualizando Info e status..."
             UPDATE_PAYLOAD=$(jq -n --arg item_id "$ITEM_ID" --arg board_id "$BOARD_ID" --arg colvals "$COLUMN_VALUES_JSON" \
               '{query: "mutation { change_multiple_column_values(board_id: \($board_id|tonumber), item_id: \($item_id|tonumber), column_values: \($colvals)) { id } }"}')
-
             UPDATE_RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: Bearer $MONDAY_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data-raw "$UPDATE_PAYLOAD")
-
-            echo "📥 Resposta da API ao atualizar item:"
             echo "$UPDATE_RESPONSE" | jq .
             echo "✅ Item atualizado com sucesso!"
-            echo "ID do Item: $ITEM_ID"
-            echo "Status atual: $STATUS_LABEL"
           else
             echo "➕ Item não existe, criando novo item..."
             CREATE_PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --arg board_id "$BOARD_ID" --arg colvals "$COLUMN_VALUES_JSON" \
               '{query: "mutation { create_item(board_id: \($board_id), item_name: \($name), column_values: \($colvals)) { id name } }"}')
-
             NEW_ITEM=$(curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: Bearer $MONDAY_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data-raw "$CREATE_PAYLOAD")
-
-            echo "📥 Resposta da API ao criar item:"
             echo "$NEW_ITEM" | jq .
-
             NEW_ITEM_ID=$(echo "$NEW_ITEM" | jq -r '.data.create_item.id // empty')
-
             if [ -z "$NEW_ITEM_ID" ]; then
-              echo "❌ Erro: não foi possível criar o item no Monday. Confira os logs acima."
+              echo "❌ Erro: não foi possível criar o item no Monday."
               exit 1
             fi
-
             echo "✅ Item criado com sucesso!"
-            echo "ID do Item: $NEW_ITEM_ID"
-            echo "Status inicial: $STATUS_LABEL"
           fi
