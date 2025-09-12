@@ -45,7 +45,6 @@ jobs:
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
           fi
-
       # --- Instalar Trivy ---
       - name: Install Trivy
         run: |
@@ -55,7 +54,6 @@ jobs:
           echo "$HOME/bin" >> $GITHUB_PATH
           export PATH="$HOME/bin:$PATH"
           trivy --version
-
       # --- Trivy Scan ---
       - name: Criar diretório para relatório Trivy
         run: mkdir -p trivy-reports
@@ -67,7 +65,6 @@ jobs:
           trivy image --severity HIGH,CRITICAL --exit-code 1 \
             --format json -o trivy-reports/trivy-report.json \
             "${IMAGE}"
-
       # --- Mostrar resumo no log ---
       - name: Show Trivy JSON summary in log
         if: always()
@@ -78,7 +75,6 @@ jobs:
           else
             echo "✅ Relatório não encontrado"
           fi
-
       # --- Upload Artifact ---
       - name: Upload Trivy report
         if: always()
@@ -99,7 +95,6 @@ jobs:
             PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${APP_NAME}'.\\n🔗 Relatório disponível em: ${REPORT_URL}\"}"
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
           fi
-
       # --- Atualiza Fleet Repo ---
       - name: Update Fleet repo manifests
         if: success()
@@ -134,7 +129,6 @@ jobs:
             git push origin "${BRANCH}"
             echo "✅ Manifest atualizado"
           fi
-
       # --- Create/Update Monday Item ---
       - name: Create Monday Item
         if: success()
@@ -145,7 +139,7 @@ jobs:
           BOARD_ID: "10018892855"
         run: |
           set -eo pipefail
-
+          
           ITEM_NAME="Deploy Stage - $APP_NAME"
           IMAGE_INFO="Imagem: $IMAGE"
 
@@ -155,14 +149,19 @@ jobs:
           json_escape() { jq -Rn --arg str "$1" '$str|@json'; }
           SAFE_ITEM_NAME=$(json_escape "$ITEM_NAME")
 
-          # Cria column_values como JSON compacto
-          COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" '{project_status: {index:2}, text_mkvn9dqm: $info}' | jq -c)
+          # Cria column_values usando label (melhor que index fixo)
+          COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" \
+            '{project_status: {label: "Para Teste"}, text_mkvn9dqm: $info}' | jq -c)
+
           # Escapa aspas para GraphQL
           COLUMN_VALUES_ESCAPED=$(printf '%s' "$COLUMN_VALUES" | sed 's/"/\\"/g')
 
           # Payload final para GraphQL
-          PAYLOAD=$(jq -n --arg name "$SAFE_ITEM_NAME" --arg colvals "$COLUMN_VALUES_ESCAPED" \
-            '{query: "mutation { create_item(board_id: 10018892855, item_name: \($name), column_values: \"\($colvals)\") { id name } }"}')
+          PAYLOAD=$(jq -n \
+            --arg name "$SAFE_ITEM_NAME" \
+            --arg colvals "$COLUMN_VALUES_ESCAPED" \
+            --argjson board_id "$BOARD_ID" \
+            '{query: "mutation { create_item(board_id: \($board_id), item_name: \($name), column_values: \"\($colvals)\") { id name } }"}')
 
           # Chamada à API
           RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
@@ -172,5 +171,4 @@ jobs:
 
           echo "📥 Resposta da API:"
           echo "$RESPONSE" | jq .
-
           echo "✅ Item criado com sucesso!"
