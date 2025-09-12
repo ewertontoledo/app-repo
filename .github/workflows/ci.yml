@@ -149,13 +149,8 @@ jobs:
 
           echo "🚀 Criando item: $ITEM_NAME"
 
-          # Escapa strings para JSON/GraphQL
-          json_escape() { jq -Rn --arg str "$1" '$str|@json'; }
-          SAFE_ITEM_NAME=$(json_escape "$ITEM_NAME")
-          SAFE_IMAGE_INFO=$(json_escape "$IMAGE_INFO")
-
           # Payload com column_values
-          PAYLOAD=$(jq -n --arg name "$SAFE_ITEM_NAME" --arg text "$SAFE_IMAGE_INFO" \
+          PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --arg text "$IMAGE_INFO" \
             '{query: "mutation { create_item(board_id: 10018892855, item_name: \($name), column_values: {\"project_status\":{\"index\":2},\"text_mkvn9dqm\":\($text)}) { id name } }"}')
 
           # Chamada à API
