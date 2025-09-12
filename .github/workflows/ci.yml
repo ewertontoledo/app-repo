@@ -151,7 +151,7 @@ jobs:
 
           # Cria column_values usando label (melhor que index fixo)
           COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" \
-            '{project_status: {label: "Para Teste"}, text_mkvn9dqm: $info}' | jq -c)
+            '{project_status: {label: "Não iniciado"}, text_mkvn9dqm: $info}' | jq -c)
 
           # Escapa aspas para GraphQL
           COLUMN_VALUES_ESCAPED=$(printf '%s' "$COLUMN_VALUES" | sed 's/"/\\"/g')
