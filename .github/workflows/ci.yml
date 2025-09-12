@@ -138,76 +138,104 @@ jobs:
           APP_NAME: ${{ env.APP_NAME }}
           IMAGE: ${{ env.IMAGE }}
           BOARD_ID: "10018892855"
-          STATUS_LABEL: "Não iniciado"
         run: |
           set -eo pipefail
 
           ITEM_NAME="Deploy Stage - $APP_NAME"
           IMAGE_INFO="Imagem: $IMAGE"
-          STATUS_LABEL="${STATUS_LABEL:-Não iniciado}"
 
-          echo "🚀 Criando ou atualizando item: $ITEM_NAME"
+          echo "🚀 Verificando item: $ITEM_NAME"
 
-          # --- Valores das colunas como JSON ---
-          COLUMN_VALUES=$(jq -n \
-            --arg status "$STATUS_LABEL" \
-            --arg info "$IMAGE_INFO" \
-            '{project_status: {label: $status}, text_mkvn9dqm: $info}')
+          # 1) Busca de itens existentes usando boards(ids: [ID]) { items_page { items { id name column_values { id text } } } }
+          QUERY=$(jq -n --arg board_id "$BOARD_ID" \
+            '{query: "query { boards(ids: [\($board_id)]) { items_page { items { id name column_values { id text } } } } }"}')
 
-          # --- Verifica se item já existe pelo nome ---
-          QUERY=$(jq -n \
-            --arg board_id "$BOARD_ID" \
-            --arg name "$ITEM_NAME" \
-            '{query: "query { items_page_by_column_values(board_id: \($board_id), columns: [{column_id:\"name\", column_values:[\($name)]}]) { items { id } } }"}')
+          echo "---- QUERY (search) ----"
+          echo "$QUERY" | jq .
 
           RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
             -H "Authorization: Bearer $MONDAY_API_TOKEN" \
             -H "Content-Type: application/json" \
             --data-raw "$QUERY")
 
-          ITEM_ID=$(echo "$RESPONSE" | jq -r '.data.items_page_by_column_values.items[0].id // empty')
+          echo "---- RESPONSE (search) ----"
+          echo "$RESPONSE" | jq . || echo "$RESPONSE"
 
-          if [ -n "$ITEM_ID" ]; then
-            echo "🔄 Item já existe (ID: $ITEM_ID), atualizando colunas..."
-            UPDATE_PAYLOAD=$(jq -n \
-              --arg item_id "$ITEM_ID" \
-              --arg board_id "$BOARD_ID" \
-              --argjson colvals "$COLUMN_VALUES" \
-              '{query: "mutation { change_multiple_column_values(board_id: \($board_id), item_id: \($item_id), column_values: \($colvals)) { id } }"}')
+          # 3) Validação de erros: aborta se API retornar erros
+          if echo "$RESPONSE" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
+            echo "🚫 Erro da API do Monday (search). Aborting."
+            echo "$RESPONSE" | jq .
+            exit 1
+          fi
 
-            UPDATE_RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
+          # Extrai ITEM_ID e CURRENT_STATUS (tratando ausência de column_values)
+          ITEM_ID=$(echo "$RESPONSE" | jq -r --arg name "$ITEM_NAME" \
+            '.data.boards[0].items_page.items[]? | select(.name == $name) | .id // empty')
+          CURRENT_STATUS=$(echo "$RESPONSE" | jq -r --arg name "$ITEM_NAME" \
+            '.data.boards[0].items_page.items[]? | select(.name == $name) | (.column_values? // []) | map(select(.id=="project_status"))[0].text // empty')
+
+          echo "ITEM_ID=${ITEM_ID:-<empty>}"
+          echo "CURRENT_STATUS=${CURRENT_STATUS:-<empty>}"
+
+          if [ -z "$ITEM_ID" ]; then
+            echo "➕ Item não existe, criando no status 'Não iniciado'..."
+
+            # COLUMN_VALUES como JSON direto
+            COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" \
+              '{project_status: {label: "Não iniciado"}, text_mkvn9dqm: $info}')
+
+            echo "---- COLUMN_VALUES (object) ----"
+            echo "$COLUMN_VALUES" | jq .
+
+            # 2) Conversão para string: usar ($colvals | tostring) ao montar o mutation
+            PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --argjson colvals "$COLUMN_VALUES" --arg board_id "$BOARD_ID" \
+              '{query: "mutation { create_item(board_id: \($board_id|tonumber), item_name: \($name), column_values: \($colvals | tostring)) { id name } }"}')
+
+            echo "---- PAYLOAD (create) ----"
+            echo "$PAYLOAD" | jq .
+
+            CREATE_RESP=$(curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: Bearer $MONDAY_API_TOKEN" \
               -H "Content-Type: application/json" \
-              --data-raw "$UPDATE_PAYLOAD")
+              --data-raw "$PAYLOAD")
 
-            echo "📥 Resposta da API ao atualizar item:"
-            echo "$UPDATE_RESPONSE" | jq .
-            echo "✅ Item atualizado com sucesso!"
-            echo "ID do Item: $ITEM_ID"
+            echo "---- RESPONSE (create) ----"
+            echo "$CREATE_RESP" | jq . || echo "$CREATE_RESP"
 
-          else
-            echo "➕ Item não existe, criando novo item..."
-            CREATE_PAYLOAD=$(jq -n \
-              --arg name "$ITEM_NAME" \
-              --arg board_id "$BOARD_ID" \
-              --argjson colvals "$COLUMN_VALUES" \
-              '{query: "mutation { create_item(board_id: \($board_id), item_name: \($name), column_values: \($colvals)) { id name } }"}')
-
-            NEW_ITEM=$(curl -s -X POST https://api.monday.com/v2 \
-              -H "Authorization: Bearer $MONDAY_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data-raw "$CREATE_PAYLOAD")
-
-            echo "📥 Resposta da API ao criar item:"
-            echo "$NEW_ITEM" | jq .
-
-            NEW_ITEM_ID=$(echo "$NEW_ITEM" | jq -r '.data.create_item.id // empty')
-
-            if [ -z "$NEW_ITEM_ID" ]; then
-              echo "❌ Erro: não foi possível criar o item no Monday"
+            # Valida erros da criação
+            if echo "$CREATE_RESP" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
+              echo "🚫 Erro ao criar item no Monday."
+              echo "$CREATE_RESP" | jq .
               exit 1
             fi
 
-            echo "✅ Item criado com sucesso!"
-            echo "ID do Item: $NEW_ITEM_ID"
+          else
+            if [ "$CURRENT_STATUS" = "Em Correção" ]; then
+              echo "🔄 Item já existe em 'Em Correção', atualizando apenas imagem..."
+
+              # 2) Usar tostring também para o value simples
+              UPDATE_PAYLOAD=$(jq -n --arg item_id "$ITEM_ID" --arg board_id "$BOARD_ID" --arg info "$IMAGE_INFO" \
+                '{query: "mutation { change_simple_column_value(board_id: \($board_id|tonumber), item_id: \($item_id|tonumber), column_id: \"text_mkvn9dqm\", value: \($info | tostring)) { id } }"}')
+
+              echo "---- PAYLOAD (update) ----"
+              echo "$UPDATE_PAYLOAD" | jq .
+
+              UPDATE_RESP=$(curl -s -X POST https://api.monday.com/v2 \
+                -H "Authorization: Bearer $MONDAY_API_TOKEN" \
+                -H "Content-Type: application/json" \
+                --data-raw "$UPDATE_PAYLOAD")
+
+              echo "---- RESPONSE (update) ----"
+              echo "$UPDATE_RESP" | jq . || echo "$UPDATE_RESP"
+
+              # Valida erros do update
+              if echo "$UPDATE_RESP" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
+                echo "🚫 Erro ao atualizar item no Monday."
+                echo "$UPDATE_RESP" | jq .
+                exit 1
+              fi
+
+            else
+              echo "✅ Item já existe no status '$CURRENT_STATUS', nada a fazer."
+            fi
           fi
