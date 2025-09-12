@@ -123,16 +123,12 @@ jobs:
             -H "Content-Type: application/json" \
             --data-raw "$QUERY")
 
-          # --- Extrai ID e status ---
           ITEM_ID=$(echo "$RESPONSE" | jq -r '.data.items_page_by_column_values.items[0].id // empty')
-          CURRENT_STATUS=$(echo "$RESPONSE" | jq -r '
-            .data.items_page_by_column_values.items[0].column_values? // [] 
-            | map(select(.id=="project_status"))[0].text // empty
-          ')
+          CURRENT_STATUS=$(echo "$RESPONSE" | jq -r '.data.items_page_by_column_values.items[0].column_values? // [] | map(select(.id=="project_status"))[0].text // empty')
 
-          # --- Valores das colunas como JSON válido ---
+          # --- Valores das colunas como JSON escapado ---
           COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" --arg status "$STATUS_LABEL" \
-            '{project_status: {label: $status}, text_mkvn9dqm: $info}' | jq -c)
+            '{project_status: {label: $status}, text_mkvn9dqm: $info}' | jq -c | jq -Rs .)
 
           if [ -n "$ITEM_ID" ]; then
             echo "🔄 Item já existe (ID: $ITEM_ID), atualizando Info e status..."
