@@ -136,7 +136,7 @@ jobs:
           MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
           APP_NAME: ${{ env.APP_NAME }}
           IMAGE: ${{ env.IMAGE }}
-          BOARD_ID: 10018892855
+          BOARD_ID: "10018892855"
           STATUS_LABEL: "Não iniciado"
         run: |
           set -eo pipefail
@@ -145,9 +145,12 @@ jobs:
           IMAGE_INFO="Imagem: $IMAGE"
           echo "🚀 Verificando item: $ITEM_NAME"
 
+          # --- Função para escapar strings para GraphQL ---
+          json_escape() { jq -Rn --arg str "$1" '$str|@json'; }
+
           # --- Verifica se o item já existe pelo nome ---
-          QUERY=$(jq -n --arg name "$ITEM_NAME" --argjson board_id "$BOARD_ID" \
-            '{query: "query { items_page_by_column_values(board_id: \($board_id), columns: [{column_id:\"name\", column_values:[\($name)]}]) { items { id column_values { id text } } } }"}')
+          QUERY=$(jq -n --arg board_id "$BOARD_ID" --arg name "$ITEM_NAME" \
+            '{query: "query { items_page_by_column_values(board_id: \($board_id|tonumber), columns: [{column_id:\"name\", column_values:[\($name|@json)]}]) { items { id column_values { id text } } } }"}')
 
           RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
             -H "Authorization: Bearer $MONDAY_API_TOKEN" \
@@ -155,15 +158,16 @@ jobs:
             --data-raw "$QUERY")
 
           ITEM_ID=$(echo "$RESPONSE" | jq -r '.data.items_page_by_column_values.items[0].id // empty')
+          CURRENT_STATUS=$(echo "$RESPONSE" | jq -r '.data.items_page_by_column_values.items[0].column_values? // [] | map(select(.id=="project_status"))[0].text // empty')
 
-          # --- Valores das colunas como JSON literal ---
+          # --- Valores das colunas como JSON válido ---
           COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" --arg status "$STATUS_LABEL" \
-            '{project_status: {label: $status}, text_mkvn9dqm: $info}')
+            '{project_status: {label: $status}, text_mkvn9dqm: $info}' | jq -c)
 
           if [ -n "$ITEM_ID" ]; then
             echo "🔄 Item já existe (ID: $ITEM_ID), atualizando Info e status..."
-            UPDATE_PAYLOAD=$(jq -n --argjson board_id "$BOARD_ID" --arg item_id "$ITEM_ID" --argjson colvals "$COLUMN_VALUES" \
-              '{query: "mutation { change_multiple_column_values(board_id: \($board_id), item_id: \($item_id), column_values: \($colvals)) { id } }"}')
+            UPDATE_PAYLOAD=$(jq -n --arg item_id "$ITEM_ID" --arg board_id "$BOARD_ID" --arg colvals "$COLUMN_VALUES" \
+              '{query: "mutation { change_multiple_column_values(board_id: \($board_id|tonumber), item_id: \($item_id|tonumber), column_values: \($colvals|@json)) { id } }"}')
 
             UPDATE_RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: Bearer $MONDAY_API_TOKEN" \
@@ -176,10 +180,11 @@ jobs:
             echo "✅ Item atualizado com sucesso!"
             echo "ID do Item: $ITEM_ID"
             echo "Status atual: $STATUS_LABEL"
+
           else
             echo "➕ Item não existe, criando novo item..."
-            CREATE_PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --argjson board_id "$BOARD_ID" --argjson colvals "$COLUMN_VALUES" \
-              '{query: "mutation { create_item(board_id: \($board_id), item_name: \($name), column_values: \($colvals)) { id name } }"}')
+            CREATE_PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --argjson board_id "$BOARD_ID" --arg colvals "$COLUMN_VALUES" \
+              '{query: "mutation { create_item(board_id: \($board_id), item_name: \($name), column_values: \($colvals|@json)) { id name } }"}')
 
             NEW_ITEM=$(curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: Bearer $MONDAY_API_TOKEN" \
@@ -190,8 +195,9 @@ jobs:
             echo "$NEW_ITEM" | jq .
 
             NEW_ITEM_ID=$(echo "$NEW_ITEM" | jq -r '.data.create_item.id // empty')
+
             if [ -z "$NEW_ITEM_ID" ]; then
-              echo "❌ Erro: não foi possível criar o item no Monday."
+              echo "❌ Erro: não foi possível criar o item no Monday. Confira os logs acima."
               exit 1
             fi
 
