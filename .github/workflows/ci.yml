@@ -5,6 +5,10 @@ on:
     branches: [ "develop", "stage", "main" ]
   workflow_dispatch:
     inputs:
+      environment:
+        description: 'Ambiente de deploy (develop, stage, prod)'
+        required: false
+        default: ''
       status:
         description: 'Status do deploy'
         required: true
@@ -17,20 +21,27 @@ jobs:
       environment: ${{ steps.detect.outputs.environment }}
       manifest_path: ${{ steps.detect.outputs.manifest_path }}
     steps:
-      - name: Detect Environment based on branch
+      - name: Detect Environment based on branch and input
         id: detect
         run: |
-          case "${{ github.ref_name }}" in
-            "develop") ENV="develop" ;;
-            "stage") ENV="stage" ;;
-            "main") ENV="prod" ;;
-            *) ENV="develop" ;;
-          esac
+          # Primeiro verifica se foi passado input manual
+          if [ -n "${{ github.event.inputs.environment }}" ]; then
+            ENV="${{ github.event.inputs.environment }}"
+          else
+            # Se não, detecta pelo branch
+            case "${{ github.ref_name }}" in
+              "develop") ENV="develop" ;;
+              "stage") ENV="stage" ;;
+              "main") ENV="prod" ;;
+              *) ENV="develop" ;;
+            esac
+          fi
           
           echo "environment=$ENV" >> $GITHUB_OUTPUT
           echo "manifest_path=k8s/apps/\${{ env.APP_NAME }}/$ENV" >> $GITHUB_OUTPUT
           
           echo "🎯 Branch: ${{ github.ref_name }}"
+          echo "🎯 Input environment: ${{ github.event.inputs.environment }}"
           echo "🎯 Ambiente detectado: $ENV"
           echo "📁 Path do manifest: k8s/apps/\${{ env.APP_NAME }}/$ENV"
 
