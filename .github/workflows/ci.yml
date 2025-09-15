@@ -1,10 +1,12 @@
 name: Build image -> OCIR, Trivy scan and update Fleet repo
 
 on:
-  push:
-    branches: [ "stage" ]
   workflow_dispatch:
     inputs:
+      environment:
+        description: 'Ambiente de deploy (develop, stage, prod)'
+        required: true
+        default: 'develop'
       status:
         description: 'Status do deploy'
         required: true
@@ -37,7 +39,8 @@ jobs:
 
       - name: Build and push image if not exists
         run: |
-          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/stage/image/${APP_NAME}:${{ github.sha }}"
+          ENVIRONMENT="${{ github.event.inputs.environment }}"
+          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/${ENVIRONMENT}/image/${APP_NAME}:${{ github.sha }}"
           echo "IMAGE=$IMAGE" >> $GITHUB_ENV
           echo "🔍 Verificando se a imagem já existe..."
           if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
@@ -46,7 +49,6 @@ jobs:
             echo "📦 Buildando e pushando $IMAGE..."
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
-          fi
 
       - name: Install Trivy
         run: |
@@ -76,7 +78,6 @@ jobs:
             jq '.Results[]?.Vulnerabilities[]? | {PkgName, InstalledVersion, Severity, Title}' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade encontrada"
           else
             echo "✅ Relatório não encontrado"
-          fi
 
       - name: Upload Trivy report
         if: always()
@@ -107,6 +108,7 @@ jobs:
           PORT: ${{ env.APP_PORT }}
         run: |
           set -euo pipefail
+          ENVIRONMENT="${{ github.event.inputs.environment }}"
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           REPO_NO_PROTO="${FLEET_REPO#https://}"
@@ -119,7 +121,7 @@ jobs:
           curl -sSL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
           chmod +x yq
           sudo mv yq /usr/local/bin/
-          MANIFEST="k8s/apps/${APP_NAME}/stage/deployment.yaml"
+          MANIFEST="k8s/apps/${APP_NAME}/${ENVIRONMENT}/deployment.yaml"
           yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$MANIFEST"
           yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$MANIFEST"
           if git diff --quiet --exit-code; then
@@ -129,7 +131,6 @@ jobs:
             git commit -m "Atualiza imagem e porta para ${IMAGE}:${PORT} [ci skip]"
             git push origin "${BRANCH}"
             echo "✅ Manifest atualizado"
-          fi
 
       - name: Create/Update Monday Item
         if: success()
@@ -141,7 +142,8 @@ jobs:
         run: |
           set -eo pipefail
 
-          ITEM_NAME="Deploy Stage - $APP_NAME"
+          ENVIRONMENT="${{ github.event.inputs.environment }}"
+          ITEM_NAME="Deploy ${ENVIRONMENT^} - $APP_NAME"
           IMAGE_INFO="Imagem: $IMAGE"
 
           echo "🚀 Verificando item: $ITEM_NAME"
@@ -161,83 +163,34 @@ jobs:
           echo "---- RESPONSE (search) ----"
           echo "$RESPONSE" | jq . || echo "$RESPONSE"
 
-          # 2) Verifica erros
           if echo "$RESPONSE" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
             echo "🚫 Erro da API do Monday (search). Aborting."
-            echo "$RESPONSE" | jq .
             exit 1
           fi
 
-          # 3) Extrai ITEM_ID e STATUS
           ITEM_ID=$(echo "$RESPONSE" | jq -r --arg name "$ITEM_NAME" \
             '.data.boards[0].items_page.items[]? | select(.name == $name) | .id // empty')
           CURRENT_STATUS=$(echo "$RESPONSE" | jq -r --arg name "$ITEM_NAME" \
             '.data.boards[0].items_page.items[]? | select(.name == $name) | (.column_values? // []) | map(select(.id=="project_status"))[0].text // empty')
 
-          echo "ITEM_ID=${ITEM_ID:-<empty>}"
-          echo "CURRENT_STATUS=${CURRENT_STATUS:-<empty>}"
-
-          # 4) Se não existe, cria novo item
           if [ -z "$ITEM_ID" ]; then
-            echo "➕ Item não existe, criando no status 'Não iniciado'..."
-
             COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" \
               '{project_status: {label: "Não iniciado"}, text_mkvn9dqm: $info}')
-
-            echo "---- COLUMN_VALUES (object) ----"
-            echo "$COLUMN_VALUES" | jq .
-
-            # Escapa JSON para string
             COLUMN_VALUES_ESCAPED=$(echo "$COLUMN_VALUES" | jq -Rs .)
-
             PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --arg board_id "$BOARD_ID" --arg colvals "$COLUMN_VALUES_ESCAPED" \
               '{query: "mutation { create_item(board_id: \($board_id|tonumber), item_name: \"\($name)\", column_values: \($colvals)) { id name } }"}')
-
-            echo "---- PAYLOAD (create) ----"
-            echo "$PAYLOAD" | jq .
-
-            CREATE_RESP=$(curl -s -X POST https://api.monday.com/v2 \
+            curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: Bearer $MONDAY_API_TOKEN" \
               -H "Content-Type: application/json" \
-              --data-raw "$PAYLOAD")
-
-            echo "---- RESPONSE (create) ----"
-            echo "$CREATE_RESP" | jq . || echo "$CREATE_RESP"
-
-            if echo "$CREATE_RESP" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
-              echo "🚫 Erro ao criar item no Monday."
-              echo "$CREATE_RESP" | jq .
-              exit 1
-            fi
-
+              --data-raw "$PAYLOAD" > /dev/null
           else
-            # 5) Se já existe em "Em Correção", atualiza imagem
             if [ "$CURRENT_STATUS" = "Em Correção" ]; then
-              echo "🔄 Item já existe em 'Em Correção', atualizando apenas imagem..."
-
               IMAGE_ESCAPED=$(echo "$IMAGE_INFO" | jq -Rs .)
-
               UPDATE_PAYLOAD=$(jq -n --arg item_id "$ITEM_ID" --arg board_id "$BOARD_ID" --arg info "$IMAGE_ESCAPED" \
                 '{query: "mutation { change_simple_column_value(board_id: \($board_id|tonumber), item_id: \($item_id|tonumber), column_id: \"text_mkvn9dqm\", value: \($info)) { id } }"}')
-
-              echo "---- PAYLOAD (update) ----"
-              echo "$UPDATE_PAYLOAD" | jq .
-
-              UPDATE_RESP=$(curl -s -X POST https://api.monday.com/v2 \
+              curl -s -X POST https://api.monday.com/v2 \
                 -H "Authorization: Bearer $MONDAY_API_TOKEN" \
                 -H "Content-Type: application/json" \
-                --data-raw "$UPDATE_PAYLOAD")
-
-              echo "---- RESPONSE (update) ----"
-              echo "$UPDATE_RESP" | jq . || echo "$UPDATE_RESP"
-
-              if echo "$UPDATE_RESP" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
-                echo "🚫 Erro ao atualizar item no Monday."
-                echo "$UPDATE_RESP" | jq .
-                exit 1
-              fi
-
-            else
-              echo "✅ Item já existe no status '$CURRENT_STATUS', nada a fazer."
+                --data-raw "$UPDATE_PAYLOAD" > /dev/null
             fi
           fi
