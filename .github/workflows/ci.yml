@@ -1,8 +1,8 @@
-name: Build image -> OCIR, Trivy scan and update Fleet repo
+name: Deploy Multi-Environment
 
 on:
   push:
-    branches: [ "develop", "stage", "main" ]
+    branches: [ "develop", "stage", "prod" ]
   workflow_dispatch:
     inputs:
       environment:
@@ -32,6 +32,7 @@ jobs:
             case "${{ github.ref_name }}" in
               "develop") ENV="develop" ;;
               "stage") ENV="stage" ;;
+              "prod") ENV="prod" ;;
               "main") ENV="prod" ;;
               *) ENV="develop" ;;
             esac
@@ -44,6 +45,17 @@ jobs:
           echo "🎯 Input environment: ${{ github.event.inputs.environment }}"
           echo "🎯 Ambiente detectado: $ENV"
           echo "📁 Path do manifest: k8s/apps/\${{ env.APP_NAME }}/$ENV"
+          
+          # Define o título do workflow baseado no ambiente
+          case "$ENV" in
+            "develop") WORKFLOW_TITLE="🚀 Deploy Development" ;;
+            "stage") WORKFLOW_TITLE="🔄 Deploy Staging" ;;
+            "prod") WORKFLOW_TITLE="🎯 Deploy Production" ;;
+            *) WORKFLOW_TITLE="🔧 Deploy $ENV" ;;
+          esac
+          
+          echo "workflow_title=$WORKFLOW_TITLE" >> $GITHUB_OUTPUT
+          echo "📋 Título do workflow: $WORKFLOW_TITLE"
 
   build-and-push:
     runs-on: ubuntu-latest
@@ -57,6 +69,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: 🎯 Show Environment Info
+        run: |
+          echo "=========================================="
+          echo "🎯 DEPLOY PARA: ${{ needs.detect-environment.outputs.environment }}"
+          echo "🌐 Branch: ${{ github.ref_name }}"
+          echo "📦 Aplicação: ${APP_NAME}"
+          echo "=========================================="
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
@@ -352,12 +372,14 @@ jobs:
             echo "✅ Item atualizado com sucesso para ${ENVIRONMENT}!"
           fi
 
-      - name: Deploy Summary
+      - name: 🎉 Deploy Summary
         if: always()
         run: |
-          echo "🎉 Deploy Summary"
-          echo "=================="
-          echo "🎯 Ambiente: ${ENVIRONMENT}"
+          echo "=========================================="
+          echo "🎉 DEPLOY FINALIZADO"
+          echo "=========================================="
+          echo "🎯 AMBIENTE: ${ENVIRONMENT^^}"
+          echo "🌐 BRANCH: ${{ github.ref_name }}"
           echo "🏗️ Aplicação: ${APP_NAME}"
           echo "🎨 Imagem: ${IMAGE}"
           echo "📁 Manifests: ${MANIFEST_PATH}"
