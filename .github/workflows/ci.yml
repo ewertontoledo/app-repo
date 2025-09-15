@@ -49,6 +49,7 @@ jobs:
             echo "📦 Buildando e pushando $IMAGE..."
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
+          fi
 
       - name: Install Trivy
         run: |
@@ -78,6 +79,7 @@ jobs:
             jq '.Results[]?.Vulnerabilities[]? | {PkgName, InstalledVersion, Severity, Title}' trivy-reports/trivy-report.json || echo "✅ Nenhuma vulnerabilidade encontrada"
           else
             echo "✅ Relatório não encontrado"
+          fi
 
       - name: Upload Trivy report
         if: always()
@@ -131,6 +133,7 @@ jobs:
             git commit -m "Atualiza imagem e porta para ${IMAGE}:${PORT} [ci skip]"
             git push origin "${BRANCH}"
             echo "✅ Manifest atualizado"
+          fi
 
       - name: Create/Update Monday Item
         if: success()
@@ -143,7 +146,7 @@ jobs:
           set -eo pipefail
 
           ENVIRONMENT="${{ github.event.inputs.environment }}"
-          ITEM_NAME="Deploy ${ENVIRONMENT^} - $APP_NAME"
+          ITEM_NAME="Deploy ${ENVIRONMENT} - $APP_NAME"
           IMAGE_INFO="Imagem: $IMAGE"
 
           echo "🚀 Verificando item: $ITEM_NAME"
