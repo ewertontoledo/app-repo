@@ -307,9 +307,9 @@ jobs:
             
             # Define status inicial baseado no ambiente
             case "$ENVIRONMENT" in
-              "develop") INITIAL_STATUS="Em Desenvolvimento" ;;
-              "stage") INITIAL_STATUS="Em Teste" ;;
-              "prod") INITIAL_STATUS="Em Produção" ;;
+              "develop") INITIAL_STATUS="Para Teste" ;;
+              "stage") INITIAL_STATUS="Para Teste" ;;
+              "prod") INITIAL_STATUS="Aprovado para Prod" ;;
               *) INITIAL_STATUS="Não iniciado" ;;
             esac
             
