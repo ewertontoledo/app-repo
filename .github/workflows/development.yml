@@ -1,0 +1,248 @@
+name: Build and Deploy - Development
+
+on:
+  push:
+    branches: [ "develop" ]
+  workflow_dispatch:
+    inputs:
+      deployer:
+        description: 'Usuário que disparou o deploy'
+        required: true
+        default: 'developer'
+      environment:
+        description: 'Ambiente de destino'
+        required: true
+        default: 'development'
+
+jobs:
+  build-and-deploy-dev:
+    runs-on: ubuntu-latest
+    env:
+      APP_NAME: "app-repo"
+      APP_PORT: 3000
+      ENVIRONMENT: "development"
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test -- --coverage --watchAll=false
+
+      - name: Build application
+        run: npm run build
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to OCIR (if secrets available)
+        if: ${{ secrets.OCIR_REGISTRY }}
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ secrets.OCIR_REGISTRY }}
+          username: ${{ secrets.OCIR_USERNAME }}
+          password: ${{ secrets.OCIR_AUTH_TOKEN }}
+
+      - name: Build and push image to OCIR
+        if: ${{ secrets.OCIR_REGISTRY }}
+        run: |
+          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/dev/image/${APP_NAME}:${{ github.sha }}"
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+          echo "🔍 Verificando se a imagem já existe..."
+          if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "✅ Imagem $IMAGE já existe"
+          else
+            echo "📦 Buildando e pushando $IMAGE para desenvolvimento..."
+            docker build -t "$IMAGE" .
+            docker push "$IMAGE"
+            echo "✅ Imagem enviada com sucesso para desenvolvimento"
+          fi
+
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          mkdir -p $HOME/bin
+          mv ./bin/trivy $HOME/bin/
+          echo "$HOME/bin" >> $GITHUB_PATH
+          export PATH="$HOME/bin:$PATH"
+          trivy --version
+
+      - name: Criar diretório para relatório Trivy
+        run: mkdir -p trivy-reports
+
+      - name: Scan image with Trivy (Development - Warning only)
+        if: ${{ secrets.OCIR_REGISTRY }}
+        id: trivy
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          echo "🔍 Executando scan de segurança para desenvolvimento..."
+          trivy image --severity HIGH,CRITICAL --exit-code 0 \
+            --format json -o trivy-reports/trivy-report-dev.json \
+            "${IMAGE}" || echo "⚠️ Vulnerabilidades encontradas, mas continuando para desenvolvimento"
+
+      - name: Show Trivy JSON summary in log
+        if: always() && secrets.OCIR_REGISTRY
+        run: |
+          echo "🔍 Resumo das vulnerabilidades HIGH/CRITICAL (Desenvolvimento):"
+          if [ -f trivy-reports/trivy-report-dev.json ]; then
+            jq '.Results[]?.Vulnerabilities[]? | {PkgName, InstalledVersion, Severity, Title}' trivy-reports/trivy-report-dev.json || echo "✅ Nenhuma vulnerabilidade encontrada"
+          else
+            echo "✅ Relatório não encontrado"
+          fi
+
+      - name: Upload Trivy report
+        if: always() && secrets.OCIR_REGISTRY
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report-dev
+          path: trivy-reports/trivy-report-dev.json
+
+      - name: Update Fleet repo manifests (Development)
+        if: success() && secrets.FLEET_REPO_URL
+        env:
+          FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
+          FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
+          FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
+          IMAGE: ${{ env.IMAGE }}
+          PORT: ${{ env.APP_PORT }}
+        run: |
+          set -euo pipefail
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          REPO_NO_PROTO="${FLEET_REPO#https://}"
+          CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
+          BRANCH="${FLEET_BRANCH:-main}"
+          git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
+          cd fleet-repo
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq
+          curl -sSL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
+          chmod +x yq
+          sudo mv yq /usr/local/bin/
+          MANIFEST="k8s/apps/${APP_NAME}/dev/deployment.yaml"
+          yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$MANIFEST"
+          yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$MANIFEST"
+          if git diff --quiet --exit-code; then
+            echo "✅ Nenhuma alteração detectada no ambiente de desenvolvimento"
+          else
+            git add "$MANIFEST"
+            git commit -m "🚀 Deploy DEV: Atualiza ${APP_NAME} para ${IMAGE} [ci skip]"
+            git push origin "${BRANCH}"
+            echo "✅ Manifest de desenvolvimento atualizado"
+          fi
+
+      - name: Create/Update Monday Item (Development)
+        if: success()
+        env:
+          MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
+          APP_NAME: ${{ env.APP_NAME }}
+          IMAGE: ${{ env.IMAGE }}
+          BOARD_ID: "10018892855"
+        run: |
+          set -eo pipefail
+
+          ITEM_NAME="Deploy Development - $APP_NAME"
+          IMAGE_INFO="Imagem DEV: ${IMAGE:-build-local}"
+
+          echo "🚀 Verificando item de desenvolvimento: $ITEM_NAME"
+
+          # 1) Busca itens existentes
+          QUERY=$(jq -n --arg board_id "$BOARD_ID" \
+            '{query: "query { boards(ids: [\($board_id)]) { items_page { items { id name column_values { id text } } } } }"}')
+
+          RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
+            -H "Authorization: Bearer $MONDAY_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-raw "$QUERY")
+
+          # 2) Verifica erros
+          if echo "$RESPONSE" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
+            echo "🚫 Erro da API do Monday (search). Continuando sem Monday..."
+            exit 0
+          fi
+
+          # 3) Extrai ITEM_ID e STATUS
+          ITEM_ID=$(echo "$RESPONSE" | jq -r --arg name "$ITEM_NAME" \
+            '.data.boards[0].items_page.items[]? | select(.name == $name) | .id // empty')
+
+          echo "ITEM_ID=${ITEM_ID:-<empty>}"
+
+          # 4) Se não existe, cria novo item
+          if [ -z "$ITEM_ID" ]; then
+            echo "➕ Criando item de desenvolvimento..."
+
+            COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" \
+              '{project_status: {label: "Para Teste"}, text_mkvn9dqm: $info}')
+
+            # Escapa JSON para string
+            COLUMN_VALUES_ESCAPED=$(echo "$COLUMN_VALUES" | jq -Rs .)
+
+            PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --arg board_id "$BOARD_ID" --arg colvals "$COLUMN_VALUES_ESCAPED" \
+              '{query: "mutation { create_item(board_id: \($board_id|tonumber), item_name: \"\($name)\", column_values: \($colvals)) { id name } }"}')
+
+            CREATE_RESP=$(curl -s -X POST https://api.monday.com/v2 \
+              -H "Authorization: Bearer $MONDAY_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data-raw "$PAYLOAD")
+
+            if echo "$CREATE_RESP" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
+              echo "🚫 Erro ao criar item no Monday. Continuando..."
+              echo "$CREATE_RESP" | jq . || echo "$CREATE_RESP"
+            else
+              echo "✅ Item de desenvolvimento criado com sucesso"
+            fi
+
+          else
+            echo "🔄 Atualizando item de desenvolvimento existente..."
+
+            IMAGE_ESCAPED=$(echo "$IMAGE_INFO" | jq -Rs .)
+
+            UPDATE_PAYLOAD=$(jq -n --arg item_id "$ITEM_ID" --arg board_id "$BOARD_ID" --arg info "$IMAGE_ESCAPED" \
+              '{query: "mutation { change_simple_column_value(board_id: \($board_id|tonumber), item_id: \($item_id|tonumber), column_id: \"text_mkvn9dqm\", value: \($info)) { id } }"}')
+
+            UPDATE_RESP=$(curl -s -X POST https://api.monday.com/v2 \
+              -H "Authorization: Bearer $MONDAY_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data-raw "$UPDATE_PAYLOAD")
+
+            if echo "$UPDATE_RESP" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
+              echo "🚫 Erro ao atualizar item no Monday. Continuando..."
+              echo "$UPDATE_RESP" | jq . || echo "$UPDATE_RESP"
+            else
+              echo "✅ Item de desenvolvimento atualizado"
+            fi
+          fi
+
+      - name: Notify Teams success (Development)
+        if: success()
+        run: |
+          if [ -n "${TEAMS_WEBHOOK_URL:-}" ]; then
+            DEPLOYER="${{ github.event.inputs.deployer || github.actor }}"
+            COMMIT_MSG=$(git log -1 --pretty=format:"%s")
+            PAYLOAD=$(jq -n --arg app "$APP_NAME" --arg deployer "$DEPLOYER" --arg commit "$COMMIT_MSG" --arg sha "${{ github.sha }}" \
+              '{text: "✅ Deploy de DESENVOLVIMENTO bem-sucedido!\n📱 App: \($app)\n👤 Deployer: \($deployer)\n📝 Commit: \($commit)\n🔗 SHA: \($sha)\n🌍 Ambiente: Development"}')
+            curl -H 'Content-Type: application/json' -d "$PAYLOAD" "$TEAMS_WEBHOOK_URL"
+          fi
+
+      - name: Notify Teams failure (Development)
+        if: failure()
+        run: |
+          if [ -n "${TEAMS_WEBHOOK_URL:-}" ]; then
+            DEPLOYER="${{ github.event.inputs.deployer || github.actor }}"
+            PAYLOAD=$(jq -n --arg app "$APP_NAME" --arg deployer "$DEPLOYER" \
+              '{text: "❌ Falha no deploy de DESENVOLVIMENTO!\n📱 App: \($app)\n👤 Deployer: \($deployer)\n🔗 Verifique os logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"}')
+            curl -H 'Content-Type: application/json' -d "$PAYLOAD" "$TEAMS_WEBHOOK_URL"
+          fi
