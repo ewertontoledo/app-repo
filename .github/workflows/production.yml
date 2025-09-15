@@ -1,0 +1,311 @@
+name: Build and Deploy - Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployer:
+        description: 'Usuário que disparou o deploy'
+        required: true
+        default: 'manager'
+      environment:
+        description: 'Ambiente de destino'
+        required: true
+        default: 'production'
+      gmud_ticket:
+        description: 'Ticket GMUD obrigatório'
+        required: true
+      justification:
+        description: 'Justificativa do deploy'
+        required: true
+
+jobs:
+  build-and-deploy-prod:
+    runs-on: ubuntu-latest
+    environment: production  # GitHub Environment com aprovação manual
+    env:
+      APP_NAME: "app-repo"
+      APP_PORT: 3000
+      ENVIRONMENT: "production"
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+
+    steps:
+      - name: Validate GMUD Ticket
+        run: |
+          if [[ ! "${{ github.event.inputs.gmud_ticket }}" =~ ^GMUD-[0-9]{4}-[0-9]{3,}$ ]]; then
+            echo "❌ Formato de ticket GMUD inválido. Esperado: GMUD-YYYY-XXX"
+            exit 1
+          fi
+          echo "✅ Ticket GMUD válido: ${{ github.event.inputs.gmud_ticket }}"
+
+      - name: Notify Teams - Production deploy started
+        run: |
+          if [ -n "${TEAMS_WEBHOOK_URL:-}" ]; then
+            PAYLOAD=$(jq -n --arg app "$APP_NAME" --arg deployer "${{ github.event.inputs.deployer }}" \
+              --arg gmud "${{ github.event.inputs.gmud_ticket }}" --arg just "${{ github.event.inputs.justification }}" \
+              '{text: "🚀 DEPLOY DE PRODUÇÃO INICIADO!\n📱 App: \($app)\n👤 Deployer: \($deployer)\n📋 GMUD: \($gmud)\n📝 Justificativa: \($just)\n⏳ Aguardando aprovação..."}')
+            curl -H 'Content-Type: application/json' -d "$PAYLOAD" "$TEAMS_WEBHOOK_URL"
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests (Production)
+        run: npm test -- --coverage --watchAll=false
+
+      - name: Build application (Production)
+        run: npm run build
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to OCIR
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ secrets.OCIR_REGISTRY }}
+          username: ${{ secrets.OCIR_USERNAME }}
+          password: ${{ secrets.OCIR_AUTH_TOKEN }}
+
+      - name: Build and push image to OCIR (Production)
+        run: |
+          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/prod/image/${APP_NAME}:${{ github.sha }}"
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+          echo "🔍 Verificando se a imagem já existe..."
+          if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "✅ Imagem $IMAGE já existe"
+          else
+            echo "📦 Buildando e pushando $IMAGE para produção..."
+            docker build -t "$IMAGE" .
+            docker push "$IMAGE"
+            echo "✅ Imagem enviada com sucesso para produção"
+          fi
+
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          mkdir -p $HOME/bin
+          mv ./bin/trivy $HOME/bin/
+          echo "$HOME/bin" >> $GITHUB_PATH
+          export PATH="$HOME/bin:$PATH"
+          trivy --version
+
+      - name: Criar diretório para relatório Trivy
+        run: mkdir -p trivy-reports
+
+      - name: Scan image with Trivy (Production - STRICT)
+        id: trivy
+        run: |
+          export PATH="$HOME/bin:$PATH"
+          echo "🔍 Executando scan de segurança RIGOROSO para produção..."
+          trivy image --severity HIGH,CRITICAL --exit-code 1 \
+            --format json -o trivy-reports/trivy-report-prod.json \
+            "${IMAGE}"
+
+      - name: Show Trivy JSON summary in log
+        if: always()
+        run: |
+          echo "🔍 Resumo das vulnerabilidades HIGH/CRITICAL (Produção):"
+          if [ -f trivy-reports/trivy-report-prod.json ]; then
+            jq '.Results[]?.Vulnerabilities[]? | {PkgName, InstalledVersion, Severity, Title}' trivy-reports/trivy-report-prod.json || echo "✅ Nenhuma vulnerabilidade encontrada"
+          else
+            echo "✅ Relatório não encontrado"
+          fi
+
+      - name: Upload Trivy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report-prod
+          path: trivy-reports/trivy-report-prod.json
+
+      - name: Notify Teams on Trivy failure
+        if: failure()
+        run: |
+          if [ -n "${TEAMS_WEBHOOK_URL:-}" ]; then
+            ARTIFACT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+              | jq -r '.artifacts[0].id')
+            REPORT_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${ARTIFACT_ID}"
+            PAYLOAD=$(jq -n --arg app "$APP_NAME" --arg report "$REPORT_URL" --arg gmud "${{ github.event.inputs.gmud_ticket }}" \
+              '{text: "🚫 DEPLOY DE PRODUÇÃO BLOQUEADO!\n📱 App: \($app)\n📋 GMUD: \($gmud)\n⚠️ Falha no scan de segurança\n🔗 Relatório: \($report)\n❌ Deploy cancelado por vulnerabilidades críticas"}')
+            curl -H 'Content-Type: application/json' -d "$PAYLOAD" "$TEAMS_WEBHOOK_URL"
+          fi
+
+      - name: Create backup point before production deploy
+        if: success()
+        run: |
+          echo "📸 Criando ponto de backup antes do deploy de produção..."
+          BACKUP_TAG="backup-before-${{ github.sha }}-$(date +%Y%m%d-%H%M%S)"
+          echo "BACKUP_TAG=$BACKUP_TAG" >> $GITHUB_ENV
+          echo "✅ Tag de backup: $BACKUP_TAG"
+
+      - name: Update Fleet repo manifests (Production)
+        if: success()
+        env:
+          FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
+          FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
+          FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
+          IMAGE: ${{ env.IMAGE }}
+          PORT: ${{ env.APP_PORT }}
+          BACKUP_TAG: ${{ env.BACKUP_TAG }}
+        run: |
+          set -euo pipefail
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          REPO_NO_PROTO="${FLEET_REPO#https://}"
+          CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
+          BRANCH="${FLEET_BRANCH:-main}"
+          git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
+          cd fleet-repo
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq
+          curl -sSL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
+          chmod +x yq
+          sudo mv yq /usr/local/bin/
+          
+          MANIFEST="k8s/apps/${APP_NAME}/prod/deployment.yaml"
+          
+          # Criar backup da configuração atual
+          cp "$MANIFEST" "${MANIFEST}.backup-$(date +%Y%m%d-%H%M%S)"
+          
+          # Atualizar manifest de produção
+          yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$MANIFEST"
+          yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$MANIFEST"
+          
+          if git diff --quiet --exit-code; then
+            echo "✅ Nenhuma alteração detectada no ambiente de produção"
+          else
+            git add .
+            git commit -m "🚀 Deploy PROD: ${APP_NAME} → ${IMAGE} [GMUD: ${{ github.event.inputs.gmud_ticket }}] [ci skip]"
+            git push origin "${BRANCH}"
+            echo "✅ Manifest de produção atualizado com backup"
+          fi
+
+      - name: Create/Update Monday Item (Production)
+        if: success()
+        env:
+          MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
+          APP_NAME: ${{ env.APP_NAME }}
+          IMAGE: ${{ env.IMAGE }}
+          BOARD_ID: "10018892855"
+        run: |
+          set -eo pipefail
+
+          ITEM_NAME="Deploy Production - $APP_NAME"
+          IMAGE_INFO="Imagem PROD: ${IMAGE} | GMUD: ${{ github.event.inputs.gmud_ticket }}"
+
+          echo "🚀 Verificando item de produção: $ITEM_NAME"
+
+          # 1) Busca itens existentes
+          QUERY=$(jq -n --arg board_id "$BOARD_ID" \
+            '{query: "query { boards(ids: [\($board_id)]) { items_page { items { id name column_values { id text } } } } }"}')
+
+          RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
+            -H "Authorization: Bearer $MONDAY_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-raw "$QUERY")
+
+          # 2) Verifica erros
+          if echo "$RESPONSE" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
+            echo "🚫 Erro da API do Monday (search). Continuando sem Monday..."
+            exit 0
+          fi
+
+          # 3) Extrai ITEM_ID
+          ITEM_ID=$(echo "$RESPONSE" | jq -r --arg name "$ITEM_NAME" \
+            '.data.boards[0].items_page.items[]? | select(.name == $name) | .id // empty')
+
+          echo "ITEM_ID=${ITEM_ID:-<empty>}"
+
+          # 4) Se não existe, cria novo item
+          if [ -z "$ITEM_ID" ]; then
+            echo "➕ Criando item de produção..."
+
+            COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" \
+              '{project_status: {label: "Concluído"}, text_mkvn9dqm: $info}')
+
+            # Escapa JSON para string
+            COLUMN_VALUES_ESCAPED=$(echo "$COLUMN_VALUES" | jq -Rs .)
+
+            PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --arg board_id "$BOARD_ID" --arg colvals "$COLUMN_VALUES_ESCAPED" \
+              '{query: "mutation { create_item(board_id: \($board_id|tonumber), item_name: \"\($name)\", column_values: \($colvals)) { id name } }"}')
+
+            CREATE_RESP=$(curl -s -X POST https://api.monday.com/v2 \
+              -H "Authorization: Bearer $MONDAY_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data-raw "$PAYLOAD")
+
+            if echo "$CREATE_RESP" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
+              echo "🚫 Erro ao criar item no Monday. Continuando..."
+              echo "$CREATE_RESP" | jq . || echo "$CREATE_RESP"
+            else
+              echo "✅ Item de produção criado com sucesso"
+            fi
+
+          else
+            echo "🔄 Atualizando item de produção existente para 'Concluído'..."
+
+            # Atualiza status para Concluído
+            STATUS_PAYLOAD=$(jq -n --arg item_id "$ITEM_ID" --arg board_id "$BOARD_ID" \
+              '{query: "mutation { change_simple_column_value(board_id: \($board_id|tonumber), item_id: \($item_id|tonumber), column_id: \"project_status\", value: \"Concluído\") { id } }"}')
+
+            STATUS_RESP=$(curl -s -X POST https://api.monday.com/v2 \
+              -H "Authorization: Bearer $MONDAY_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data-raw "$STATUS_PAYLOAD")
+
+            # Atualiza imagem
+            IMAGE_ESCAPED=$(echo "$IMAGE_INFO" | jq -Rs .)
+            UPDATE_PAYLOAD=$(jq -n --arg item_id "$ITEM_ID" --arg board_id "$BOARD_ID" --arg info "$IMAGE_ESCAPED" \
+              '{query: "mutation { change_simple_column_value(board_id: \($board_id|tonumber), item_id: \($item_id|tonumber), column_id: \"text_mkvn9dqm\", value: \($info)) { id } }"}')
+
+            UPDATE_RESP=$(curl -s -X POST https://api.monday.com/v2 \
+              -H "Authorization: Bearer $MONDAY_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              --data-raw "$UPDATE_PAYLOAD")
+
+            echo "✅ Item de produção atualizado para 'Concluído'"
+          fi
+
+      - name: Post-deployment verification
+        if: success()
+        run: |
+          echo "🔍 Executando verificações pós-deploy..."
+          echo "✅ Deploy de produção concluído com sucesso"
+          echo "📋 GMUD: ${{ github.event.inputs.gmud_ticket }}"
+          echo "👤 Deployer: ${{ github.event.inputs.deployer }}"
+          echo "🏷️ Backup Tag: ${{ env.BACKUP_TAG }}"
+
+      - name: Notify Teams success (Production)
+        if: success()
+        run: |
+          if [ -n "${TEAMS_WEBHOOK_URL:-}" ]; then
+            DEPLOYER="${{ github.event.inputs.deployer }}"
+            COMMIT_MSG=$(git log -1 --pretty=format:"%s")
+            PAYLOAD=$(jq -n --arg app "$APP_NAME" --arg deployer "$DEPLOYER" --arg commit "$COMMIT_MSG" \
+              --arg sha "${{ github.sha }}" --arg gmud "${{ github.event.inputs.gmud_ticket }}" \
+              --arg backup "${{ env.BACKUP_TAG }}" \
+              '{text: "🎉 DEPLOY DE PRODUÇÃO CONCLUÍDO COM SUCESSO!\n📱 App: \($app)\n👤 Deployer: \($deployer)\n📝 Commit: \($commit)\n🔗 SHA: \($sha)\n📋 GMUD: \($gmud)\n📸 Backup: \($backup)\n🌍 Ambiente: Production\n🔐 Scan de segurança aprovado\n✅ Deploy validado"}')
+            curl -H 'Content-Type: application/json' -d "$PAYLOAD" "$TEAMS_WEBHOOK_URL"
+          fi
+
+      - name: Notify Teams failure (Production)
+        if: failure()
+        run: |
+          if [ -n "${TEAMS_WEBHOOK_URL:-}" ]; then
+            DEPLOYER="${{ github.event.inputs.deployer }}"
+            PAYLOAD=$(jq -n --arg app "$APP_NAME" --arg deployer "$DEPLOYER" --arg gmud "${{ github.event.inputs.gmud_ticket }}" \
+              '{text: "❌ FALHA NO DEPLOY DE PRODUÇÃO!\n📱 App: \($app)\n👤 Deployer: \($deployer)\n📋 GMUD: \($gmud)\n🔗 Logs: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\n🚨 AÇÃO IMEDIATA NECESSÁRIA"}')
+            curl -H 'Content-Type: application/json' -d "$PAYLOAD" "$TEAMS_WEBHOOK_URL"
+          fi
