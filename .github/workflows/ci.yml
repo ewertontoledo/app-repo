@@ -183,9 +183,12 @@ jobs:
           REPO_NO_PROTO="${FLEET_REPO#https://}"
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
 
-          echo "🔍 Tentando clonar repositório fleet..."
+          echo "🔍 Clonando repositório fleet..."
           
-          # Estratégia 1: Clona o repo inteiro primeiro
+          # Remove diretório se já existir
+          rm -rf fleet-repo
+          
+          # Clona apenas o repositório (sem especificar branch)
           if ! git clone "${CLONE_URL}" fleet-repo; then
             echo "❌ Falha ao clonar repositório"
             exit 1
@@ -193,27 +196,38 @@ jobs:
 
           cd fleet-repo
           
-          # Verifica se a branch stage existe e faz checkout
-          echo "🌿 Verificando branches disponíveis..."
-          git branch -r
+          # Lista todas as branches remotas para debug
+          echo "🌿 Branches disponíveis no repositório:"
+          git branch -a
           
-          if git show-ref --verify --quiet "refs/remotes/origin/${CLEAN_ENVIRONMENT}"; then
-            echo "✅ Branch ${CLEAN_ENVIRONMENT} encontrada"
-            git checkout "${CLEAN_ENVIRONMENT}"
+          # Fetch todas as branches remotas
+          git fetch --all
+          
+          # Verifica se a branch target existe e faz checkout
+          if git ls-remote --heads origin "${CLEAN_ENVIRONMENT}" | grep -q "${CLEAN_ENVIRONMENT}"; then
+            echo "✅ Branch ${CLEAN_ENVIRONMENT} encontrada no remote"
+            git checkout -b "${CLEAN_ENVIRONMENT}" "origin/${CLEAN_ENVIRONMENT}" 2>/dev/null || git checkout "${CLEAN_ENVIRONMENT}"
           else
             echo "⚠️ Branch ${CLEAN_ENVIRONMENT} não encontrada, criando nova..."
-            if git show-ref --verify --quiet refs/remotes/origin/develop; then
+            # Tenta criar a partir de develop, main ou master
+            if git ls-remote --heads origin develop | grep -q develop; then
+              echo "📋 Criando branch ${CLEAN_ENVIRONMENT} a partir de develop"
               git checkout -b "${CLEAN_ENVIRONMENT}" origin/develop
-            elif git show-ref --verify --quiet refs/remotes/origin/main; then
+            elif git ls-remote --heads origin main | grep -q main; then
+              echo "📋 Criando branch ${CLEAN_ENVIRONMENT} a partir de main"
               git checkout -b "${CLEAN_ENVIRONMENT}" origin/main
+            elif git ls-remote --heads origin master | grep -q master; then
+              echo "📋 Criando branch ${CLEAN_ENVIRONMENT} a partir de master"
+              git checkout -b "${CLEAN_ENVIRONMENT}" origin/master
             else
-              git checkout -b "${CLEAN_ENVIRONMENT}"
+              echo "📋 Criando branch ${CLEAN_ENVIRONMENT} vazia"
+              git checkout --orphan "${CLEAN_ENVIRONMENT}"
             fi
           fi
 
           echo "📍 Branch atual: $(git branch --show-current)"
 
-          # Instala yq
+          # Instala yq se não estiver disponível
           if ! command -v yq &> /dev/null; then
             echo "📦 Instalando yq..."
             sudo apt-get update -qq
@@ -222,7 +236,7 @@ jobs:
             sudo mv yq /usr/local/bin/
           fi
 
-          # Define paths CORRETOS (sem barras extras)
+          # Define paths corretos
           MANIFEST_DIR="k8s/apps/${CLEAN_APP_NAME}/${CLEAN_ENVIRONMENT}"
           DEPLOYMENT_FILE="${MANIFEST_DIR}/deployment.yaml"
           SERVICE_FILE="${MANIFEST_DIR}/service.yaml"
@@ -232,122 +246,109 @@ jobs:
           # Cria diretório se não existir
           mkdir -p "${MANIFEST_DIR}"
 
-          # Cria deployment.yaml se não existir
-          if [ ! -f "${DEPLOYMENT_FILE}" ]; then
-            echo "📝 Criando deployment.yaml..."
-            cat > "${DEPLOYMENT_FILE}" << 'EOF'
+          # Cria ou atualiza deployment.yaml (padrão Rancher/Fleet)
+          echo "📝 Criando/atualizando deployment.yaml..."
+          cat > "${DEPLOYMENT_FILE}" << EOF
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: APP_NAME_PLACEHOLDER-ENV_PLACEHOLDER
-            namespace: ENV_PLACEHOLDER
+            name: ${CLEAN_APP_NAME}-${CLEAN_ENVIRONMENT}
+            namespace: ${CLEAN_ENVIRONMENT}
             labels:
-              app: APP_NAME_PLACEHOLDER
-              environment: ENV_PLACEHOLDER
+              app: ${CLEAN_APP_NAME}
+              env: ${CLEAN_ENVIRONMENT}
+            annotations:
+              fleet.cattle.io/auto-update-image: "true"
           spec:
             replicas: 1
             selector:
               matchLabels:
-                app: APP_NAME_PLACEHOLDER
-                environment: ENV_PLACEHOLDER
+                app: ${CLEAN_APP_NAME}
+                env: ${CLEAN_ENVIRONMENT}
             template:
               metadata:
                 labels:
-                  app: APP_NAME_PLACEHOLDER
-                  environment: ENV_PLACEHOLDER
+                  app: ${CLEAN_APP_NAME}
+                  env: ${CLEAN_ENVIRONMENT}
               spec:
                 containers:
-                - name: APP_NAME_PLACEHOLDER
-                  image: IMAGE_PLACEHOLDER
-                  ports:
-                  - containerPort: PORT_PLACEHOLDER
-                  env:
-                  - name: ENVIRONMENT
-                    value: ENV_PLACEHOLDER
-                  - name: APP_PORT
-                    value: "PORT_PLACEHOLDER"
+                  - name: ${CLEAN_APP_NAME}
+                    image: ${IMAGE}
+                    imagePullPolicy: Always
+                    ports:
+                      - containerPort: ${PORT}
+                    readinessProbe:
+                      httpGet:
+                        path: /
+                        port: ${PORT}
+                      initialDelaySeconds: 5
+                      periodSeconds: 10
+                imagePullSecrets:
+                  - name: ocir-regcred
           EOF
 
-                # Substitui placeholders
-                sed -i "s/APP_NAME_PLACEHOLDER/${CLEAN_APP_NAME}/g" "${DEPLOYMENT_FILE}"
-                sed -i "s/ENV_PLACEHOLDER/${CLEAN_ENVIRONMENT}/g" "${DEPLOYMENT_FILE}"
-                sed -i "s/IMAGE_PLACEHOLDER/${IMAGE//\//\\/}/g" "${DEPLOYMENT_FILE}"
-                sed -i "s/PORT_PLACEHOLDER/${PORT}/g" "${DEPLOYMENT_FILE}"
-                
-                echo "✅ deployment.yaml criado"
-              fi
-
-              # Cria service.yaml se não existir
-              if [ ! -f "${SERVICE_FILE}" ]; then
-                echo "📝 Criando service.yaml..."
-                cat > "${SERVICE_FILE}" << 'EOF'
+              # Cria ou atualiza service.yaml (NodePort para Rancher)
+              echo "📝 Criando/atualizando service.yaml..."
+              
+              # Gera um nodePort baseado no hash do app+env para ser consistente
+              NODE_PORT_HASH=$(echo "${CLEAN_APP_NAME}-${CLEAN_ENVIRONMENT}" | md5sum | cut -c1-4)
+              NODE_PORT=$((30000 + 0x${NODE_PORT_HASH} % 2768)) # Range 30000-32767
+              
+              cat > "${SERVICE_FILE}" << EOF
           apiVersion: v1
           kind: Service
           metadata:
-            name: APP_NAME_PLACEHOLDER-ENV_PLACEHOLDER-service
-            namespace: ENV_PLACEHOLDER
-            labels:
-              app: APP_NAME_PLACEHOLDER
-              environment: ENV_PLACEHOLDER
+            name: ${CLEAN_APP_NAME}-svc
+            namespace: ${CLEAN_ENVIRONMENT}
           spec:
             selector:
-              app: APP_NAME_PLACEHOLDER
-              environment: ENV_PLACEHOLDER
+              app: ${CLEAN_APP_NAME}
             ports:
-            - protocol: TCP
-              port: 80
-              targetPort: PORT_PLACEHOLDER
-            type: ClusterIP
+              - port: 80
+                targetPort: ${PORT}
+                nodePort: ${NODE_PORT}
+                protocol: TCP
+            type: NodePort
           EOF
 
-                # Substitui placeholders
-                sed -i "s/APP_NAME_PLACEHOLDER/${CLEAN_APP_NAME}/g" "${SERVICE_FILE}"
-                sed -i "s/ENV_PLACEHOLDER/${CLEAN_ENVIRONMENT}/g" "${SERVICE_FILE}"
-                sed -i "s/PORT_PLACEHOLDER/${PORT}/g" "${SERVICE_FILE}"
-                
-                echo "✅ service.yaml criado"
-              fi
-
-              # Atualiza manifests com yq
-              echo "🔄 Atualizando manifests..."
-              
-              # Escapa a imagem para yq (substitui / por \/)
-              ESCAPED_IMAGE=$(echo "${IMAGE}" | sed 's/\//\\\//g')
-              
-              # Atualiza deployment
-              yq eval -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "${DEPLOYMENT_FILE}"
-              yq eval -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "${DEPLOYMENT_FILE}"
-              
-              # Atualiza env var se existir
-              if yq eval '.spec.template.spec.containers[0].env[1]' "${DEPLOYMENT_FILE}" >/dev/null 2>&1; then
-                yq eval -i ".spec.template.spec.containers[0].env[1].value = \"${PORT}\"" "${DEPLOYMENT_FILE}"
-              fi
-              
-              # Atualiza service
-              yq eval -i ".spec.ports[0].targetPort = ${PORT}" "${SERVICE_FILE}"
-
-              echo "✅ Manifests atualizados!"
+              echo "✅ Manifests criados/atualizados!"
 
               # Verifica mudanças e faz commit
               if git diff --quiet --exit-code; then
-                echo "ℹ️ Nenhuma alteração detectada"
+                echo "ℹ️ Nenhuma alteração detectada nos manifests"
               else
-                echo "📝 Commitando alterações..."
+                echo "📝 Adicionando arquivos ao git..."
                 git add "${MANIFEST_DIR}/"
-                git commit -m "Deploy ${CLEAN_APP_NAME} para ${CLEAN_ENVIRONMENT}
+                
+                echo "📝 Commitando alterações..."
+                git commit -m "🚀 Deploy ${CLEAN_APP_NAME} para ${CLEAN_ENVIRONMENT}
 
           - Imagem: ${IMAGE}
           - Porta: ${PORT}
-          - Data: $(date -u)
+          - Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
 
-          [ci skip]"
+          Manifests atualizados:
+          - ${DEPLOYMENT_FILE}
+          - ${SERVICE_FILE}
+
+          [skip ci]"
                 
-                echo "🚀 Fazendo push..."
-                git push origin "${CLEAN_ENVIRONMENT}"
+                echo "🚀 Fazendo push da branch ${CLEAN_ENVIRONMENT}..."
+                git push -u origin "${CLEAN_ENVIRONMENT}"
                 echo "✅ Deploy concluído com sucesso!"
+                
+                # Mostra resumo das alterações
+                echo "📊 Resumo das alterações:"
+                echo "  - Branch: ${CLEAN_ENVIRONMENT}"
+                echo "  - App: ${CLEAN_APP_NAME}"  
+                echo "  - Namespace: ${CLEAN_ENVIRONMENT}"
+                echo "  - Imagem: ${IMAGE}"
+                echo "  - Porta Container: ${PORT}"
+                echo "  - NodePort: ${NODE_PORT}"
+                echo "  - Fleet Auto-Update: Habilitado"
               fi
 
-              echo "🎉 Processo finalizado!
+              echo "🎉 Processo finalizado com sucesso!"
 
       - name: Create/Update Monday Item
         if: success()
