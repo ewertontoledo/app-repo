@@ -234,7 +234,6 @@ jobs:
                     value: "${PORT}"
           EOF
               fi
-
               if [ ! -f "$SERVICE_MANIFEST" ]; then
                 cat > "$SERVICE_MANIFEST" << EOF
           apiVersion: v1
