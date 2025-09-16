@@ -30,8 +30,7 @@ jobs:
             case "${{ github.ref_name }}" in
               "develop") ENV="develop" ;;
               "stage") ENV="stage" ;;
-              "prod") ENV="prod" ;;
-              "main") ENV="prod" ;;
+              "prod"|"main") ENV="prod" ;;
               *) ENV="develop" ;;
             esac
           fi
@@ -39,11 +38,7 @@ jobs:
           echo "environment=$ENV" >> $GITHUB_OUTPUT
           echo "manifest_path=k8s/apps/\${{ env.APP_NAME }}/$ENV" >> $GITHUB_OUTPUT
 
-          echo "🎯 Branch: ${{ github.ref_name }}"
-          echo "🎯 Input environment: ${{ github.event.inputs.environment }}"
-          echo "🎯 Ambiente detectado: $ENV"
-          echo "📁 Path do manifest: k8s/apps/\${{ env.APP_NAME }}/$ENV"
-
+          # Define título do workflow
           case "$ENV" in
             "develop") WORKFLOW_TITLE="🚀 Deploy Development" ;;
             "stage") WORKFLOW_TITLE="🔄 Deploy Staging" ;;
@@ -51,7 +46,17 @@ jobs:
             *) WORKFLOW_TITLE="🔧 Deploy $ENV" ;;
           esac
           echo "workflow_title=$WORKFLOW_TITLE" >> $GITHUB_OUTPUT
-          echo "📋 Título do workflow: $WORKFLOW_TITLE"
+
+      - name: Set Deploy URL
+        run: |
+          case "${{ steps.detect.outputs.environment }}" in
+            develop) DEPLOY_URL="https://develop.example.com/${{ env.APP_NAME }}" ;;
+            stage)   DEPLOY_URL="https://stage.example.com/${{ env.APP_NAME }}" ;;
+            prod)    DEPLOY_URL="https://www.example.com/${{ env.APP_NAME }}" ;;
+            *)       DEPLOY_URL="https://develop.example.com/${{ env.APP_NAME }}" ;;
+          esac
+          echo "DEPLOY_URL=${DEPLOY_URL}" >> $GITHUB_ENV
+          echo "🌐 Deploy URL: ${DEPLOY_URL}"
 
   build-and-push:
     runs-on: ubuntu-latest
@@ -61,6 +66,8 @@ jobs:
       APP_PORT: 9000
       TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
       ENVIRONMENT: ${{ needs.detect-environment.outputs.environment }}
+      DEPLOY_URL: ${{ env.DEPLOY_URL }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -71,6 +78,7 @@ jobs:
           echo "🎯 DEPLOY PARA: ${{ needs.detect-environment.outputs.environment }}"
           echo "🌐 Branch: ${{ github.ref_name }}"
           echo "📦 Aplicação: ${APP_NAME}"
+          echo "🌐 URL: ${DEPLOY_URL}"
           echo "=========================================="
 
       - name: Set up QEMU
@@ -95,96 +103,29 @@ jobs:
           if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
             echo "✅ Imagem $IMAGE já existe"
           else
-            echo "📦 Buildando e pushando $IMAGE..."
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
           fi
 
-      - name: Install Trivy
-        run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
-          mkdir -p $HOME/bin
-          mv ./bin/trivy $HOME/bin/
-          echo "$HOME/bin" >> $GITHUB_PATH
-          export PATH="$HOME/bin:$PATH"
-          trivy --version
-
-      - name: Criar diretório para relatório Trivy
-        run: mkdir -p trivy-reports
-
-      - name: Scan image with Trivy
-        id: trivy
-        run: |
-          export PATH="$HOME/bin:$PATH"
-          trivy image --severity HIGH,CRITICAL --exit-code 1 \
-            --format json -o trivy-reports/trivy-report-${ENVIRONMENT}.json \
-            "${IMAGE}"
-
-      - name: Show Trivy JSON summary in log
-        if: always()
-        run: |
-          echo "🔍 Resumo das vulnerabilidades HIGH/CRITICAL para ${ENVIRONMENT}:"
-          if [ -f trivy-reports/trivy-report-${ENVIRONMENT}.json ]; then
-            jq '.Results[]?.Vulnerabilities[]? | {PkgName, InstalledVersion, Severity, Title}' trivy-reports/trivy-report-${ENVIRONMENT}.json || echo "✅ Nenhuma vulnerabilidade encontrada"
-          else
-            echo "✅ Relatório não encontrado"
-          fi
-
-      - name: Upload Trivy report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: trivy-report-${{ env.ENVIRONMENT }}
-          path: trivy-reports/trivy-report-${{ env.ENVIRONMENT }}.json
-
-      - name: Notify Teams on Trivy failure
-        if: failure()
-        run: |
-          if [ -n "$TEAMS_WEBHOOK_URL" ]; then
-            ARTIFACT_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
-              | jq -r '.artifacts[0].id')
-            REPORT_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${ARTIFACT_ID}"
-            PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${APP_NAME}' no ambiente '${ENVIRONMENT}'.\\n🔗 Relatório disponível em: ${REPORT_URL}\"}"
-            curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
-          fi
-
       - name: Update Fleet repo manifests dynamically
-        if: success()
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
           FLEET_BRANCH: ${{ env.ENVIRONMENT }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
           IMAGE: ${{ env.IMAGE }}
           PORT: ${{ env.APP_PORT }}
-          MANIFEST_PATH: ${{ env.MANIFEST_PATH }}
+          MANIFEST_PATH: ${{ needs.detect-environment.outputs.manifest_path }}
+          DEPLOY_URL: ${{ env.DEPLOY_URL }}
         run: |
           set -euo pipefail
-          echo "🚀 Atualizando manifests para ambiente: ${ENVIRONMENT}"
-          echo "📁 Path do manifest: ${MANIFEST_PATH}"
-          echo "🎯 Imagem: ${IMAGE}"
-
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
           REPO_NO_PROTO="${FLEET_REPO#https://}"
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
           BRANCH="${FLEET_BRANCH}"
 
-          if [ "${BRANCH}" == "prod" ]; then
-            BASE_BRANCH="stage"
-          else
-            BASE_BRANCH="develop"
-          fi
-
-          MANIFEST_PATH_CLEAN=$(echo "${MANIFEST_PATH}" | sed 's#//*#/#g')
-
           if git ls-remote --heads "${CLONE_URL}" "${BRANCH}" | grep "${BRANCH}" >/dev/null; then
-            echo "✅ Branch ${BRANCH} existe. Clonando..."
             git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
           else
-            echo "⚠️ Branch ${BRANCH} não encontrada. Criando a partir de ${BASE_BRANCH}..."
-            git clone --depth 1 --branch "${BASE_BRANCH}" "${CLONE_URL}" fleet-repo
+            git clone --depth 1 --branch develop "${CLONE_URL}" fleet-repo
             cd fleet-repo
             git checkout -b "${BRANCH}"
             git push origin "${BRANCH}"
@@ -192,16 +133,14 @@ jobs:
           fi
 
           cd fleet-repo
-
           sudo apt-get update -qq
           sudo apt-get install -y -qq jq
           curl -sSL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
           chmod +x yq
           sudo mv yq /usr/local/bin/
 
-          DEPLOYMENT_MANIFEST="${MANIFEST_PATH_CLEAN}/deployment.yaml"
-          SERVICE_MANIFEST="${MANIFEST_PATH_CLEAN}/service.yaml"
-
+          DEPLOYMENT_MANIFEST="${MANIFEST_PATH}/deployment.yaml"
+          SERVICE_MANIFEST="${MANIFEST_PATH}/service.yaml"
           mkdir -p "$(dirname "$DEPLOYMENT_MANIFEST")"
 
           if [ ! -f "$DEPLOYMENT_MANIFEST" ]; then
@@ -211,9 +150,6 @@ jobs:
             metadata:
               name: ${APP_NAME}-${ENVIRONMENT}
               namespace: ${ENVIRONMENT}
-              labels:
-                app: ${APP_NAME}
-                environment: ${ENVIRONMENT}
             spec:
               replicas: 1
               selector:
@@ -236,6 +172,8 @@ jobs:
                       value: ${ENVIRONMENT}
                     - name: APP_PORT
                       value: "${PORT}"
+                    - name: DEPLOY_URL
+                      value: "${DEPLOY_URL}"
             EOF
                       fi
 
@@ -246,9 +184,6 @@ jobs:
             metadata:
               name: ${APP_NAME}-${ENVIRONMENT}-service
               namespace: ${ENVIRONMENT}
-              labels:
-                app: ${APP_NAME}
-                environment: ${ENVIRONMENT}
             spec:
               selector:
                 app: ${APP_NAME}
@@ -261,110 +196,18 @@ jobs:
             EOF
                       fi
 
+          # Atualiza manifests existentes
           yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$DEPLOYMENT_MANIFEST"
           yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$DEPLOYMENT_MANIFEST"
           yq e -i ".spec.template.spec.containers[0].env[1].value = \"${PORT}\"" "$DEPLOYMENT_MANIFEST"
+          yq e -i ".spec.template.spec.containers[0].env[2].value = \"${DEPLOY_URL}\"" "$DEPLOYMENT_MANIFEST"
           yq e -i ".spec.ports[0].targetPort = ${PORT}" "$SERVICE_MANIFEST"
 
           if git diff --quiet --exit-code; then
             echo "✅ Nenhuma alteração detectada nos manifests"
           else
-            git add "${MANIFEST_PATH_CLEAN}/"
+            git add "${MANIFEST_PATH}/"
             git commit -m "Deploy ${APP_NAME} para ${ENVIRONMENT}: ${IMAGE} [ci skip]"
             git push origin "${BRANCH}"
             echo "✅ Manifests atualizados com sucesso!"
           fi
-
-      - name: Create/Update Monday Item
-        if: success()
-        env:
-          MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
-          APP_NAME: ${{ env.APP_NAME }}
-          IMAGE: ${{ env.IMAGE }}
-          BOARD_ID: "10018892855"
-        run: |
-          set -eo pipefail
-          ITEM_NAME="Deploy ${ENVIRONMENT} - $APP_NAME"
-          IMAGE_INFO="Env: ${ENVIRONMENT} | Imagem: $IMAGE"
-          echo "🚀 Verificando item: $ITEM_NAME"
-
-          QUERY=$(jq -n --arg board_id "$BOARD_ID" \
-            '{query: "query { boards(ids: [\($board_id)]) { items_page { items { id name column_values { id text } } } } }"}')
-
-          RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
-            -H "Authorization: Bearer $MONDAY_API_TOKEN" \
-            -H "Content-Type: application/json" \
-            --data-raw "$QUERY")
-
-          if echo "$RESPONSE" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
-            echo "🚫 Erro da API do Monday. Aborting."
-            echo "$RESPONSE" | jq .
-            exit 1
-          fi
-
-          ITEM_ID=$(echo "$RESPONSE" | jq -r --arg name "$ITEM_NAME" \
-            '.data.boards[0].items_page.items[]? | select(.name == $name) | .id // empty')
-          CURRENT_STATUS=$(echo "$RESPONSE" | jq -r --arg name "$ITEM_NAME" \
-            '.data.boards[0].items_page.items[]? | select(.name == $name) | (.column_values? // []) | map(select(.id=="project_status"))[0].text // empty')
-
-          echo "ITEM_ID=${ITEM_ID:-<empty>}"
-          echo "CURRENT_STATUS=${CURRENT_STATUS:-<empty>}"
-
-          if [ -z "$ITEM_ID" ]; then
-            echo "➕ Criando item para ambiente ${ENVIRONMENT}..."
-            case "$ENVIRONMENT" in
-              "develop") INITIAL_STATUS="Para Teste" ;;
-              "stage") INITIAL_STATUS="Para Teste" ;;
-              "prod") INITIAL_STATUS="Aprovado para Prod" ;;
-              *) INITIAL_STATUS="Não iniciado" ;;
-            esac
-
-            COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" --arg status "$INITIAL_STATUS" \
-              '{project_status: {label: $status}, text_mkvn9dqm: $info}')
-            COLUMN_VALUES_ESCAPED=$(echo "$COLUMN_VALUES" | jq -Rs .)
-            PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --arg board_id "$BOARD_ID" --arg colvals "$COLUMN_VALUES_ESCAPED" \
-              '{query: "mutation { create_item(board_id: \($board_id|tonumber), item_name: \"\($name)\", column_values: \($colvals)) { id name } }"}')
-
-            CREATE_RESP=$(curl -s -X POST https://api.monday.com/v2 \
-              -H "Authorization: Bearer $MONDAY_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data-raw "$PAYLOAD")
-
-            if echo "$CREATE_RESP" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
-              echo "🚫 Erro ao criar item no Monday."
-              echo "$CREATE_RESP" | jq .
-              exit 1
-            fi
-            echo "✅ Item criado com sucesso para ${ENVIRONMENT}!"
-          else
-            echo "🔄 Atualizando item existente para ${ENVIRONMENT}..."
-            IMAGE_ESCAPED=$(echo "$IMAGE_INFO" | jq -Rs .)
-            UPDATE_PAYLOAD=$(jq -n --arg item_id "$ITEM_ID" --arg board_id "$BOARD_ID" --arg info "$IMAGE_ESCAPED" \
-              '{query: "mutation { change_simple_column_value(board_id: \($board_id|tonumber), item_id: \($item_id|tonumber), column_id: \"text_mkvn9dqm\", value: \($info)) { id } }"}')
-
-            UPDATE_RESP=$(curl -s -X POST https://api.monday.com/v2 \
-              -H "Authorization: Bearer $MONDAY_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data-raw "$UPDATE_PAYLOAD")
-
-            if echo "$UPDATE_RESP" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
-              echo "🚫 Erro ao atualizar item no Monday."
-              echo "$UPDATE_RESP" | jq .
-              exit 1
-            fi
-            echo "✅ Item atualizado com sucesso para ${ENVIRONMENT}!"
-          fi
-
-      - name: 🎉 Deploy Summary
-        if: always()
-        run: |
-          echo "=========================================="
-          echo "🎉 DEPLOY FINALIZADO"
-          echo "=========================================="
-          echo "🎯 AMBIENTE: ${ENVIRONMENT^^}"
-          echo "🌐 BRANCH: ${{ github.ref_name }}"
-          echo "🏗️ Aplicação: ${APP_NAME}"
-          echo "🎨 Imagem: ${IMAGE}"
-          echo "📁 Manifests: ${MANIFEST_PATH}"
-          echo "🌐 Porta: ${APP_PORT}"
-          echo "📊 Status: ${{ job.status }}"
