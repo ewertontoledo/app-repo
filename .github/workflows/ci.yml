@@ -143,41 +143,45 @@ jobs:
             PAYLOAD="{\"text\": \"⚠️ A pipeline falhou durante o scan do Trivy para '${APP_NAME}' no ambiente '${ENVIRONMENT}'.\\n🔗 Relatório disponível em: ${REPORT_URL}\"}"
             curl -H 'Content-Type: application/json' -d "$PAYLOAD" $TEAMS_WEBHOOK_URL
           fi
-
       - name: Update Fleet repo manifests dynamically
         if: success()
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
-          FLEET_BRANCH: ${{ env.ENVIRONMENT }}
+          FLEET_BRANCH: ${{ needs.detect-environment.outputs.environment }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
           IMAGE: ${{ env.IMAGE }}
           PORT: ${{ env.APP_PORT }}
-          APP_NAME: ${{ env.APP_NAME }}
+          APP_NAME: "app-teste-2"  # Certifique-se que APP_NAME está definido
           ENVIRONMENT: ${{ needs.detect-environment.outputs.environment }}
         run: |
           set -euo pipefail
 
           echo "🚀 Atualizando manifests para ambiente: ${ENVIRONMENT}"
           echo "🎯 Imagem: ${IMAGE}"
+          echo "📦 App: ${APP_NAME}"
 
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
+          # Constrói URL com token
           REPO_NO_PROTO="${FLEET_REPO#https://}"
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
           BRANCH="${FLEET_BRANCH}"
 
-          # Clona o repositório dentro de um diretório de trabalho
-          git clone --branch "${BRANCH}" "${CLONE_URL}" fleet-repo || {
+          # Clona o repositório
+          if git ls-remote --exit-code --heads "${CLONE_URL}" "${BRANCH}"; then
+            git clone --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
+          else
             echo "⚠️ Branch ${BRANCH} não encontrada. Criando a partir de develop..."
             git clone --branch develop "${CLONE_URL}" fleet-repo
             cd fleet-repo
             git checkout -b "${BRANCH}"
             cd ..
-          }
+          fi
 
           cd fleet-repo
 
+          # Atualiza commits remotos
           git pull --rebase origin "${BRANCH}" || true
 
           # Instala yq
@@ -187,7 +191,7 @@ jobs:
           chmod +x yq
           sudo mv yq /usr/local/bin/
 
-          # Define paths relativos dentro do repo
+          # Define paths dentro do repo
           MANIFEST_PATH="k8s/apps/${APP_NAME}/${ENVIRONMENT}"
           DEPLOYMENT_MANIFEST="${MANIFEST_PATH}/deployment.yaml"
           SERVICE_MANIFEST="${MANIFEST_PATH}/service.yaml"
@@ -230,6 +234,7 @@ jobs:
                     value: "${PORT}"
           EOF
               fi
+
               if [ ! -f "$SERVICE_MANIFEST" ]; then
                 cat > "$SERVICE_MANIFEST" << EOF
           apiVersion: v1
@@ -252,24 +257,21 @@ jobs:
           EOF
               fi
 
-          # Atualiza manifests existentes com yq
-          yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$DEPLOYMENT_MANIFEST"
-          yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$DEPLOYMENT_MANIFEST"
-          yq e -i ".spec.template.spec.containers[0].env[1].value = \"${PORT}\"" "$DEPLOYMENT_MANIFEST"
-          yq e -i ".spec.ports[0].targetPort = ${PORT}" "$SERVICE_MANIFEST"
+              # Atualiza manifests existentes
+              yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$DEPLOYMENT_MANIFEST"
+              yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$DEPLOYMENT_MANIFEST"
+              yq e -i ".spec.template.spec.containers[0].env[1].value = \"${PORT}\"" "$DEPLOYMENT_MANIFEST"
+              yq e -i ".spec.ports[0].targetPort = ${PORT}" "$SERVICE_MANIFEST"
 
-          # Commit e push
-          if git diff --quiet --exit-code; then
-            echo "✅ Nenhuma alteração detectada nos manifests"
-          else
-            git add "$MANIFEST_PATH/"
-            git commit -m "Deploy ${APP_NAME} para ${ENVIRONMENT}: ${IMAGE} [ci skip]"
-            git push origin "${BRANCH}"
-            echo "✅ Manifests atualizados com sucesso!"
-          fi
-
-
-
+              # Commit e push
+              if git diff --quiet --exit-code; then
+                echo "✅ Nenhuma alteração detectada nos manifests"
+              else
+                git add "$MANIFEST_PATH/"
+                git commit -m "Deploy ${APP_NAME} para ${ENVIRONMENT}: ${IMAGE} [ci skip]"
+                git push origin "${BRANCH}"
+                echo "✅ Manifests atualizados com sucesso!"
+              fi
       - name: Create/Update Monday Item
         if: success()
         env:
