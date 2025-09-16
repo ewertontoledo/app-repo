@@ -167,7 +167,7 @@ jobs:
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
           BRANCH="${FLEET_BRANCH}"
 
-          # Clona o repositório
+          # Clona o repositório dentro de um diretório de trabalho
           git clone --branch "${BRANCH}" "${CLONE_URL}" fleet-repo || {
             echo "⚠️ Branch ${BRANCH} não encontrada. Criando a partir de develop..."
             git clone --branch develop "${CLONE_URL}" fleet-repo
@@ -177,7 +177,7 @@ jobs:
           }
 
           cd fleet-repo
-          # Puxa commits remotos antes de qualquer alteração
+
           git pull --rebase origin "${BRANCH}" || true
 
           # Instala yq
@@ -187,7 +187,7 @@ jobs:
           chmod +x yq
           sudo mv yq /usr/local/bin/
 
-          # Define paths dentro do repo
+          # Define paths relativos dentro do repo
           MANIFEST_PATH="k8s/apps/${APP_NAME}/${ENVIRONMENT}"
           DEPLOYMENT_MANIFEST="${MANIFEST_PATH}/deployment.yaml"
           SERVICE_MANIFEST="${MANIFEST_PATH}/service.yaml"
@@ -198,61 +198,62 @@ jobs:
           # Cria templates se não existirem
           if [ ! -f "$DEPLOYMENT_MANIFEST" ]; then
             cat > "$DEPLOYMENT_MANIFEST" << EOF
-          apiVersion: apps/v1
-          kind: Deployment
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: ${APP_NAME}-${ENVIRONMENT}
+        namespace: ${ENVIRONMENT}
+        labels:
+          app: ${APP_NAME}
+          environment: ${ENVIRONMENT}
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: ${APP_NAME}
+            environment: ${ENVIRONMENT}
+        template:
           metadata:
-            name: ${APP_NAME}-${ENVIRONMENT}
-            namespace: ${ENVIRONMENT}
             labels:
               app: ${APP_NAME}
               environment: ${ENVIRONMENT}
           spec:
-            replicas: 1
-            selector:
-              matchLabels:
-                app: ${APP_NAME}
-                environment: ${ENVIRONMENT}
-            template:
-              metadata:
-                labels:
-                  app: ${APP_NAME}
-                  environment: ${ENVIRONMENT}
-              spec:
-                containers:
-                - name: ${APP_NAME}
-                  image: ${IMAGE}
-                  ports:
-                  - containerPort: ${PORT}
-                  env:
-                  - name: ENVIRONMENT
-                    value: ${ENVIRONMENT}
-                  - name: APP_PORT
-                    value: "${PORT}"
-          EOF
-              fi
-              if [ ! -f "$SERVICE_MANIFEST" ]; then
-                cat > "$SERVICE_MANIFEST" << EOF
-          apiVersion: v1
-          kind: Service
-          metadata:
-            name: ${APP_NAME}-${ENVIRONMENT}-service
-            namespace: ${ENVIRONMENT}
-            labels:
-              app: ${APP_NAME}
-              environment: ${ENVIRONMENT}
-          spec:
-            selector:
-              app: ${APP_NAME}
-              environment: ${ENVIRONMENT}
-            ports:
-            - protocol: TCP
-              port: 80
-              targetPort: ${PORT}
-            type: ClusterIP
-          EOF
-              fi
+            containers:
+            - name: ${APP_NAME}
+              image: ${IMAGE}
+              ports:
+              - containerPort: ${PORT}
+              env:
+              - name: ENVIRONMENT
+                value: ${ENVIRONMENT}
+              - name: APP_PORT
+                value: "${PORT}"
+      EOF
+          fi
 
-          # Atualiza manifests existentes
+          if [ ! -f "$SERVICE_MANIFEST" ]; then
+            cat > "$SERVICE_MANIFEST" << EOF
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: ${APP_NAME}-${ENVIRONMENT}-service
+        namespace: ${ENVIRONMENT}
+        labels:
+          app: ${APP_NAME}
+          environment: ${ENVIRONMENT}
+      spec:
+        selector:
+          app: ${APP_NAME}
+          environment: ${ENVIRONMENT}
+        ports:
+        - protocol: TCP
+          port: 80
+          targetPort: ${PORT}
+        type: ClusterIP
+      EOF
+          fi
+
+          # Atualiza manifests existentes com yq
           yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$DEPLOYMENT_MANIFEST"
           yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$DEPLOYMENT_MANIFEST"
           yq e -i ".spec.template.spec.containers[0].env[1].value = \"${PORT}\"" "$DEPLOYMENT_MANIFEST"
