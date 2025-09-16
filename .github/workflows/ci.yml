@@ -153,12 +153,11 @@ jobs:
           IMAGE: ${{ env.IMAGE }}
           PORT: ${{ env.APP_PORT }}
           APP_NAME: ${{ env.APP_NAME }}
-          ENVIRONMENT: ${{ ENVIRONMENT }}
-          MANIFEST_PATH: ${{ MANIFEST_PATH }}
+          ENVIRONMENT: ${{ needs.detect-environment.outputs.environment }}
         run: |
           set -euo pipefail
+
           echo "🚀 Atualizando manifests para ambiente: ${ENVIRONMENT}"
-          echo "📁 Path do manifest: ${MANIFEST_PATH}"
           echo "🎯 Imagem: ${IMAGE}"
 
           git config --global user.name "github-actions[bot]"
@@ -168,6 +167,7 @@ jobs:
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
           BRANCH="${FLEET_BRANCH}"
 
+          # Clona o repositório na branch desejada, ou cria a branch se não existir
           git clone --branch "${BRANCH}" "${CLONE_URL}" fleet-repo || {
             echo "⚠️ Branch ${BRANCH} não encontrada. Criando a partir de develop..."
             git clone --branch develop "${CLONE_URL}" fleet-repo
@@ -178,18 +178,25 @@ jobs:
 
           cd fleet-repo
 
+          # Puxa commits remotos
           git pull --rebase origin "${BRANCH}" || true
 
+          # Instala yq
           sudo apt-get update -qq
           sudo apt-get install -y -qq jq
           curl -sSL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
           chmod +x yq
           sudo mv yq /usr/local/bin/
 
-          mkdir -p "${MANIFEST_PATH}"
+          # Define path relativo dentro do repo clonado
+          MANIFEST_PATH="k8s/apps/${APP_NAME}/${ENVIRONMENT}"
           DEPLOYMENT_MANIFEST="${MANIFEST_PATH}/deployment.yaml"
           SERVICE_MANIFEST="${MANIFEST_PATH}/service.yaml"
 
+          echo "📁 Criando diretório de manifests se não existir: ${MANIFEST_PATH}"
+          mkdir -p "$MANIFEST_PATH"
+
+          # Cria templates se não existirem
           if [ ! -f "$DEPLOYMENT_MANIFEST" ]; then
             cat > "$DEPLOYMENT_MANIFEST" << EOF
           apiVersion: apps/v1
@@ -222,36 +229,38 @@ jobs:
                     value: ${ENVIRONMENT}
                   - name: APP_PORT
                     value: "${PORT}"
-                    EOF
-                              fi
+          EOF
+              fi
 
-                              if [ ! -f "$SERVICE_MANIFEST" ]; then
-                                cat > "$SERVICE_MANIFEST" << EOF
-                    apiVersion: v1
-                    kind: Service
-                    metadata:
-                      name: ${APP_NAME}-${ENVIRONMENT}-service
-                      namespace: ${ENVIRONMENT}
-                      labels:
-                        app: ${APP_NAME}
-                        environment: ${ENVIRONMENT}
-                    spec:
-                      selector:
-                        app: ${APP_NAME}
-                        environment: ${ENVIRONMENT}
-                      ports:
-                      - protocol: TCP
-                        port: 80
-                        targetPort: ${PORT}
-                      type: ClusterIP
-                    EOF
-                              fi
+              if [ ! -f "$SERVICE_MANIFEST" ]; then
+                cat > "$SERVICE_MANIFEST" << EOF
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${APP_NAME}-${ENVIRONMENT}-service
+            namespace: ${ENVIRONMENT}
+            labels:
+              app: ${APP_NAME}
+              environment: ${ENVIRONMENT}
+          spec:
+            selector:
+              app: ${APP_NAME}
+              environment: ${ENVIRONMENT}
+            ports:
+            - protocol: TCP
+              port: 80
+              targetPort: ${PORT}
+            type: ClusterIP
+          EOF
+              fi
 
+              # Atualiza manifests com a nova imagem e porta
               yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$DEPLOYMENT_MANIFEST"
               yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$DEPLOYMENT_MANIFEST"
               yq e -i ".spec.template.spec.containers[0].env[1].value = \"${PORT}\"" "$DEPLOYMENT_MANIFEST"
               yq e -i ".spec.ports[0].targetPort = ${PORT}" "$SERVICE_MANIFEST"
 
+              # Commit e push se houver mudanças
               if git diff --quiet --exit-code; then
                 echo "✅ Nenhuma alteração detectada nos manifests"
               else
@@ -260,7 +269,6 @@ jobs:
                 git push origin "${BRANCH}"
                 echo "✅ Manifests atualizados com sucesso!"
               fi
-
 
       - name: Create/Update Monday Item
         if: success()
@@ -285,7 +293,7 @@ jobs:
 
           if echo "$RESPONSE" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
             echo "🚫 Erro da API do Monday. Aborting."
-            echo "$RESPONSE" | jq .
+            echo "$RESPONSE" | jåq .
             exit 1
           fi
 
