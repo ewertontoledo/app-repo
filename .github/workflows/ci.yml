@@ -156,293 +156,198 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "🚀 Atualizando manifests para ambiente: ${ENVIRONMENT}"
+          echo "🚀 Iniciando deploy para ambiente: ${ENVIRONMENT}"
           echo "🎯 Imagem: ${IMAGE}"
           echo "📦 App: ${APP_NAME}"
-          echo "🌿 Branch: ${FLEET_BRANCH}"
-          echo "🏠 Repo: ${FLEET_REPO}"
           echo "🔌 Porta: ${PORT}"
 
-          # Validações básicas
-          if [ -z "${FLEET_REPO:-}" ]; then
-            echo "❌ FLEET_REPO não definido"
+          # Sanitiza e valida variáveis
+          if [ -z "${ENVIRONMENT:-}" ] || [ -z "${APP_NAME:-}" ]; then
+            echo "❌ Variáveis obrigatórias não definidas"
             exit 1
           fi
 
-          if [ -z "${FLEET_PAT:-}" ]; then
-            echo "❌ FLEET_PAT não definido"
-            exit 1
-          fi
+          # Remove caracteres problemáticos
+          CLEAN_ENVIRONMENT=$(echo "${ENVIRONMENT}" | tr -d '/' | tr -d '\\')
+          CLEAN_APP_NAME=$(echo "${APP_NAME}" | tr -d '/' | tr -d '\\')
 
-          if [ -z "${FLEET_BRANCH:-}" ]; then
-            echo "❌ FLEET_BRANCH não definido"
-            exit 1
-          fi
-
-          if [ -z "${ENVIRONMENT:-}" ]; then
-            echo "❌ ENVIRONMENT não definido"
-            exit 1
-          fi
-
-          # Sanitiza variáveis para evitar problemas de path
-          CLEAN_APP_NAME=$(echo "${APP_NAME}" | sed 's/[^a-zA-Z0-9-]//g')
-          CLEAN_ENVIRONMENT=$(echo "${ENVIRONMENT}" | sed 's/[^a-zA-Z0-9-]//g')
-          CLEAN_BRANCH=$(echo "${FLEET_BRANCH}" | sed 's/[^a-zA-Z0-9-]//g')
-
-          echo "🧹 Variáveis sanitizadas:"
+          echo "📝 Usando variáveis sanitizadas:"
+          echo "  Environment: ${CLEAN_ENVIRONMENT}"
           echo "  App: ${CLEAN_APP_NAME}"
-          echo "  Environment: ${CLEAN_ENVIRONMENT}" 
-          echo "  Branch: ${CLEAN_BRANCH}"
 
+          # Configuração git
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Constrói URL com token
+          # Construção da URL
           REPO_NO_PROTO="${FLEET_REPO#https://}"
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
-          BRANCH="${CLEAN_BRANCH}"
 
-          echo "🔗 Testando conectividade com o repositório..."
-          # Testa conectividade primeiro (sem mostrar branches por segurança)
-          if ! git ls-remote --heads "${CLONE_URL}" > /dev/null 2>&1; then
-            echo "❌ Falha na conectividade com o repositório"
-            echo "Verifique se o token PAT tem as permissões corretas"
+          echo "🔍 Tentando clonar repositório fleet..."
+          
+          # Estratégia 1: Clona o repo inteiro primeiro
+          if ! git clone "${CLONE_URL}" fleet-repo; then
+            echo "❌ Falha ao clonar repositório"
             exit 1
           fi
-          echo "✅ Conectividade OK"
 
-          # Lista branches disponíveis (mascarando nomes sensíveis)
-          echo "🌿 Verificando branches disponíveis..."
-          AVAILABLE_BRANCHES=$(git ls-remote --heads "${CLONE_URL}" | sed 's|refs/heads/||' | awk '{print $2}')
-          echo "Branches encontradas: $(echo "$AVAILABLE_BRANCHES" | wc -l)"
-
-          # Verifica se a branch específica existe
-          echo "🔍 Verificando se branch '${BRANCH}' existe..."
+          cd fleet-repo
           
-          if echo "$AVAILABLE_BRANCHES" | grep -q "^${BRANCH}$"; then
-            echo "✅ Branch '${BRANCH}' encontrada! Clonando..."
-            git clone --branch "${BRANCH}" --depth 1 "${CLONE_URL}" fleet-repo
-            cd fleet-repo
-            echo "📍 Branch atual: $(git branch --show-current)"
+          # Verifica se a branch stage existe e faz checkout
+          echo "🌿 Verificando branches disponíveis..."
+          git branch -r
+          
+          if git show-ref --verify --quiet "refs/remotes/origin/${CLEAN_ENVIRONMENT}"; then
+            echo "✅ Branch ${CLEAN_ENVIRONMENT} encontrada"
+            git checkout "${CLEAN_ENVIRONMENT}"
           else
-            echo "⚠️ Branch '${BRANCH}' não encontrada."
-            echo "🔧 Criando nova branch..."
-            
-            git clone --depth 1 "${CLONE_URL}" fleet-repo
-            cd fleet-repo
-            
-            # Verifica qual branch padrão usar como base
-            if echo "$AVAILABLE_BRANCHES" | grep -q "^develop$"; then
-              BASE_BRANCH="develop"
-            elif echo "$AVAILABLE_BRANCHES" | grep -q "^main$"; then
-              BASE_BRANCH="main"
-            elif echo "$AVAILABLE_BRANCHES" | grep -q "^master$"; then
-              BASE_BRANCH="master"
+            echo "⚠️ Branch ${CLEAN_ENVIRONMENT} não encontrada, criando nova..."
+            if git show-ref --verify --quiet refs/remotes/origin/develop; then
+              git checkout -b "${CLEAN_ENVIRONMENT}" origin/develop
+            elif git show-ref --verify --quiet refs/remotes/origin/main; then
+              git checkout -b "${CLEAN_ENVIRONMENT}" origin/main
             else
-              # Pega a primeira branch disponível
-              BASE_BRANCH=$(echo "$AVAILABLE_BRANCHES" | head -1)
+              git checkout -b "${CLEAN_ENVIRONMENT}"
             fi
-            
-            echo "✅ Usando '${BASE_BRANCH}' como base"
-            
-            # Fetch da branch base se necessário
-            if [ "$(git branch --show-current)" != "${BASE_BRANCH}" ]; then
-              git fetch origin "${BASE_BRANCH}:${BASE_BRANCH}" || true
-              git checkout "${BASE_BRANCH}" || git checkout -b "${BASE_BRANCH}" "origin/${BASE_BRANCH}"
-            fi
-            
-            # Cria nova branch
-            git checkout -b "${BRANCH}"
-            echo "📍 Nova branch criada: $(git branch --show-current)"
           fi
 
-          # Instala yq se não estiver disponível
+          echo "📍 Branch atual: $(git branch --show-current)"
+
+          # Instala yq
           if ! command -v yq &> /dev/null; then
-            echo "📦 Instalando dependências..."
+            echo "📦 Instalando yq..."
             sudo apt-get update -qq
-            sudo apt-get install -y -qq jq curl
-            
-            # Download do yq com retry
-            for i in {1..3}; do
-              if curl -sSL "https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64" -o yq; then
-                chmod +x yq
-                sudo mv yq /usr/local/bin/
-                break
-              else
-                echo "⚠️ Tentativa ${i}/3 de download do yq falhou"
-                [ $i -lt 3 ] && sleep 2
-              fi
-            done
-            
-            if ! command -v yq &> /dev/null; then
-              echo "❌ Falha na instalação do yq"
-              exit 1
-            fi
+            curl -sSL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
+            chmod +x yq
+            sudo mv yq /usr/local/bin/
           fi
-
-          echo "✅ yq disponível: $(yq --version 2>/dev/null || echo 'instalado')"
 
           # Define paths CORRETOS (sem barras extras)
-          MANIFEST_PATH="k8s/apps/${CLEAN_APP_NAME}/${CLEAN_ENVIRONMENT}"
-          DEPLOYMENT_MANIFEST="${MANIFEST_PATH}/deployment.yaml"
-          SERVICE_MANIFEST="${MANIFEST_PATH}/service.yaml"
+          MANIFEST_DIR="k8s/apps/${CLEAN_APP_NAME}/${CLEAN_ENVIRONMENT}"
+          DEPLOYMENT_FILE="${MANIFEST_DIR}/deployment.yaml"
+          SERVICE_FILE="${MANIFEST_DIR}/service.yaml"
 
-          echo "📁 Caminhos dos manifests:"
-          echo "  Base: ${MANIFEST_PATH}"
-          echo "  Deployment: ${DEPLOYMENT_MANIFEST}"
-          echo "  Service: ${SERVICE_MANIFEST}"
-
+          echo "📁 Diretório dos manifests: ${MANIFEST_DIR}"
+          
           # Cria diretório se não existir
-          if [ ! -d "${MANIFEST_PATH}" ]; then
-            echo "📁 Criando diretório: ${MANIFEST_PATH}"
-            mkdir -p "${MANIFEST_PATH}"
-          fi
+          mkdir -p "${MANIFEST_DIR}"
 
-          # Cria template do deployment se não existir
-          if [ ! -f "$DEPLOYMENT_MANIFEST" ]; then
+          # Cria deployment.yaml se não existir
+          if [ ! -f "${DEPLOYMENT_FILE}" ]; then
             echo "📝 Criando deployment.yaml..."
-            cat > "$DEPLOYMENT_MANIFEST" << EOF
-            apiVersion: apps/v1
-            kind: Deployment
-            metadata:
-              name: ${CLEAN_APP_NAME}-${CLEAN_ENVIRONMENT}
-              namespace: ${CLEAN_ENVIRONMENT}
-              labels:
-                app: ${CLEAN_APP_NAME}
-                environment: ${CLEAN_ENVIRONMENT}
-            spec:
-              replicas: 1
-              selector:
-                matchLabels:
-                  app: ${CLEAN_APP_NAME}
-                  environment: ${CLEAN_ENVIRONMENT}
-              template:
-                metadata:
-                  labels:
-                    app: ${CLEAN_APP_NAME}
-                    environment: ${CLEAN_ENVIRONMENT}
-                spec:
-                  containers:
-                  - name: ${CLEAN_APP_NAME}
-                    image: ${IMAGE}
-                    ports:
-                    - containerPort: ${PORT}
-                    env:
-                    - name: ENVIRONMENT
-                      value: ${CLEAN_ENVIRONMENT}
-                    - name: APP_PORT
-                      value: "${PORT}"
-            EOF
-                else
-                  echo "✅ deployment.yaml já existe"
-                fi
+            cat > "${DEPLOYMENT_FILE}" << 'EOF'
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: APP_NAME_PLACEHOLDER-ENV_PLACEHOLDER
+            namespace: ENV_PLACEHOLDER
+            labels:
+              app: APP_NAME_PLACEHOLDER
+              environment: ENV_PLACEHOLDER
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: APP_NAME_PLACEHOLDER
+                environment: ENV_PLACEHOLDER
+            template:
+              metadata:
+                labels:
+                  app: APP_NAME_PLACEHOLDER
+                  environment: ENV_PLACEHOLDER
+              spec:
+                containers:
+                - name: APP_NAME_PLACEHOLDER
+                  image: IMAGE_PLACEHOLDER
+                  ports:
+                  - containerPort: PORT_PLACEHOLDER
+                  env:
+                  - name: ENVIRONMENT
+                    value: ENV_PLACEHOLDER
+                  - name: APP_PORT
+                    value: "PORT_PLACEHOLDER"
+          EOF
 
-                # Cria template do service se não existir
-                if [ ! -f "$SERVICE_MANIFEST" ]; then
-                  echo "📝 Criando service.yaml..."
-                  cat > "$SERVICE_MANIFEST" << EOF
-            apiVersion: v1
-            kind: Service
-            metadata:
-              name: ${CLEAN_APP_NAME}-${CLEAN_ENVIRONMENT}-service
-              namespace: ${CLEAN_ENVIRONMENT}
-              labels:
-                app: ${CLEAN_APP_NAME}
-                environment: ${CLEAN_ENVIRONMENT}
-            spec:
-              selector:
-                app: ${CLEAN_APP_NAME}
-                environment: ${CLEAN_ENVIRONMENT}
-              ports:
-              - protocol: TCP
-                port: 80
-                targetPort: ${PORT}
-              type: ClusterIP
-            EOF
-                else
-                  echo "✅ service.yaml já existe"
-                fi
+                # Substitui placeholders
+                sed -i "s/APP_NAME_PLACEHOLDER/${CLEAN_APP_NAME}/g" "${DEPLOYMENT_FILE}"
+                sed -i "s/ENV_PLACEHOLDER/${CLEAN_ENVIRONMENT}/g" "${DEPLOYMENT_FILE}"
+                sed -i "s/IMAGE_PLACEHOLDER/${IMAGE//\//\\/}/g" "${DEPLOYMENT_FILE}"
+                sed -i "s/PORT_PLACEHOLDER/${PORT}/g" "${DEPLOYMENT_FILE}"
+                
+                echo "✅ deployment.yaml criado"
+              fi
 
-                # Verifica se os arquivos foram criados corretamente
-                if [ ! -f "$DEPLOYMENT_MANIFEST" ] || [ ! -f "$SERVICE_MANIFEST" ]; then
-                  echo "❌ Erro: Manifests não foram criados corretamente"
-                  ls -la "${MANIFEST_PATH}/" || echo "Diretório não existe"
-                  exit 1
-                fi
+              # Cria service.yaml se não existir
+              if [ ! -f "${SERVICE_FILE}" ]; then
+                echo "📝 Criando service.yaml..."
+                cat > "${SERVICE_FILE}" << 'EOF'
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: APP_NAME_PLACEHOLDER-ENV_PLACEHOLDER-service
+            namespace: ENV_PLACEHOLDER
+            labels:
+              app: APP_NAME_PLACEHOLDER
+              environment: ENV_PLACEHOLDER
+          spec:
+            selector:
+              app: APP_NAME_PLACEHOLDER
+              environment: ENV_PLACEHOLDER
+            ports:
+            - protocol: TCP
+              port: 80
+              targetPort: PORT_PLACEHOLDER
+            type: ClusterIP
+          EOF
 
-                # Atualiza manifests existentes
-                echo "🔄 Atualizando manifests com nova imagem..."
-                echo "  🎯 Nova imagem: ${IMAGE}"
-                echo "  🔌 Nova porta: ${PORT}"
+                # Substitui placeholders
+                sed -i "s/APP_NAME_PLACEHOLDER/${CLEAN_APP_NAME}/g" "${SERVICE_FILE}"
+                sed -i "s/ENV_PLACEHOLDER/${CLEAN_ENVIRONMENT}/g" "${SERVICE_FILE}"
+                sed -i "s/PORT_PLACEHOLDER/${PORT}/g" "${SERVICE_FILE}"
+                
+                echo "✅ service.yaml criado"
+              fi
 
-                # Backup dos arquivos antes da modificação
-                cp "$DEPLOYMENT_MANIFEST" "${DEPLOYMENT_MANIFEST}.backup"
-                cp "$SERVICE_MANIFEST" "${SERVICE_MANIFEST}.backup"
+              # Atualiza manifests com yq
+              echo "🔄 Atualizando manifests..."
+              
+              # Escapa a imagem para yq (substitui / por \/)
+              ESCAPED_IMAGE=$(echo "${IMAGE}" | sed 's/\//\\\//g')
+              
+              # Atualiza deployment
+              yq eval -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "${DEPLOYMENT_FILE}"
+              yq eval -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "${DEPLOYMENT_FILE}"
+              
+              # Atualiza env var se existir
+              if yq eval '.spec.template.spec.containers[0].env[1]' "${DEPLOYMENT_FILE}" >/dev/null 2>&1; then
+                yq eval -i ".spec.template.spec.containers[0].env[1].value = \"${PORT}\"" "${DEPLOYMENT_FILE}"
+              fi
+              
+              # Atualiza service
+              yq eval -i ".spec.ports[0].targetPort = ${PORT}" "${SERVICE_FILE}"
 
-                # Aplica atualizações com verificação de erros
-                echo "  📝 Atualizando deployment..."
-                if ! yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$DEPLOYMENT_MANIFEST"; then
-                  echo "❌ Erro ao atualizar imagem no deployment"
-                  exit 1
-                fi
+              echo "✅ Manifests atualizados!"
 
-                if ! yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$DEPLOYMENT_MANIFEST"; then
-                  echo "❌ Erro ao atualizar porta do container"
-                  exit 1
-                fi
+              # Verifica mudanças e faz commit
+              if git diff --quiet --exit-code; then
+                echo "ℹ️ Nenhuma alteração detectada"
+              else
+                echo "📝 Commitando alterações..."
+                git add "${MANIFEST_DIR}/"
+                git commit -m "Deploy ${CLEAN_APP_NAME} para ${CLEAN_ENVIRONMENT}
 
-                # Atualiza ENV var se existir
-                if yq e '.spec.template.spec.containers[0].env[1]' "$DEPLOYMENT_MANIFEST" > /dev/null 2>&1; then
-                  yq e -i ".spec.template.spec.containers[0].env[1].value = \"${PORT}\"" "$DEPLOYMENT_MANIFEST"
-                  echo "  ✅ Variável APP_PORT atualizada"
-                else
-                  echo "  ℹ️ Variável APP_PORT não encontrada (OK)"
-                fi
+          - Imagem: ${IMAGE}
+          - Porta: ${PORT}
+          - Data: $(date -u)
 
-                echo "  📝 Atualizando service..."
-                if ! yq e -i ".spec.ports[0].targetPort = ${PORT}" "$SERVICE_MANIFEST"; then
-                  echo "❌ Erro ao atualizar target port do service"
-                  exit 1
-                fi
+          [ci skip]"
+                
+                echo "🚀 Fazendo push..."
+                git push origin "${CLEAN_ENVIRONMENT}"
+                echo "✅ Deploy concluído com sucesso!"
+              fi
 
-                echo "✅ Manifests atualizados com sucesso!"
-
-                # Verifica alterações e commit
-                if git diff --quiet --exit-code; then
-                  echo "ℹ️ Nenhuma alteração detectada nos manifests"
-                else
-                  echo "📝 Alterações detectadas. Preparando commit..."
-                  
-                  # Mostra um resumo das alterações
-                  echo "📋 Arquivos modificados:"
-                  git diff --name-only | while read file; do
-                    echo "  📝 ${file}"
-                  done
-
-                  git add "${MANIFEST_PATH}/"
-                  
-                  # Commit com informações detalhadas
-                  COMMIT_MSG="Deploy ${CLEAN_APP_NAME} para ${CLEAN_ENVIRONMENT}
-
-            - Imagem: ${IMAGE}
-            - Porta: ${PORT}
-            - Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-
-            [ci skip]"
-                  
-                  git commit -m "${COMMIT_MSG}"
-                  
-                  echo "🚀 Fazendo push para origin/${BRANCH}..."
-                  if git push origin "${BRANCH}"; then
-                    echo "✅ Manifests atualizados com sucesso!"
-                    echo "📋 Commit: $(git log -1 --oneline)"
-                  else
-                    echo "❌ Erro no push. Tentando força..."
-                    git push --set-upstream origin "${BRANCH}"
-                  fi
-                fi
-
-                echo "🎉 Deploy finalizado com sucesso!"
+              echo "🎉 Processo finalizado!
 
       - name: Create/Update Monday Item
         if: success()
