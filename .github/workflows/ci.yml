@@ -162,6 +162,22 @@ jobs:
           echo "🌿 Branch: ${FLEET_BRANCH}"
           echo "🏠 Repo: ${FLEET_REPO}"
 
+          # Validações básicas
+          if [ -z "${FLEET_REPO}" ]; then
+            echo "❌ FLEET_REPO não definido"
+            exit 1
+          fi
+
+          if [ -z "${FLEET_PAT}" ]; then
+            echo "❌ FLEET_PAT não definido"
+            exit 1
+          fi
+
+          if [ -z "${FLEET_BRANCH}" ]; then
+            echo "❌ FLEET_BRANCH não definido"
+            exit 1
+          fi
+
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
@@ -170,37 +186,62 @@ jobs:
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
           BRANCH="${FLEET_BRANCH}"
 
-          echo "🔍 Verificando se branch ${BRANCH} existe remotamente..."
-          # Verifica se a branch existe antes de clonar
-          if git ls-remote --exit-code --heads "${CLONE_URL}" "${BRANCH}" > /dev/null 2>&1; then
-            echo "✅ Branch ${BRANCH} existe. Clonando diretamente..."
-            git clone --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
+          echo "🔍 Debug - Branch a ser verificada: '${BRANCH}'"
+          echo "🔍 Debug - Repo URL (sem token): ${FLEET_REPO}"
+
+          # Testa conectividade primeiro
+          echo "🔗 Testando conectividade com o repositório..."
+          if ! git ls-remote --heads "${CLONE_URL}" > /dev/null 2>&1; then
+            echo "❌ Falha na conectividade com o repositório"
+            echo "Verifique se o token PAT tem as permissões corretas"
+            exit 1
+          fi
+
+          echo "✅ Conectividade OK. Listando branches remotas:"
+          git ls-remote --heads "${CLONE_URL}" | sed 's|refs/heads/||' | while read commit branch; do
+            echo "  📍 ${branch}"
+          done
+
+          # Verifica se a branch específica existe
+          echo "🔍 Verificando se branch '${BRANCH}' existe remotamente..."
+          
+          # Método mais robusto para verificar branch
+          BRANCH_EXISTS=$(git ls-remote --heads "${CLONE_URL}" "${BRANCH}" | wc -l)
+          
+          if [ "${BRANCH_EXISTS}" -gt 0 ]; then
+            echo "✅ Branch '${BRANCH}' encontrada! Clonando diretamente..."
+            git clone --branch "${BRANCH}" --single-branch "${CLONE_URL}" fleet-repo
             cd fleet-repo
-            git pull origin "${BRANCH}"
+            echo "📍 Branch atual: $(git branch --show-current)"
           else
-            echo "⚠️ Branch ${BRANCH} não encontrada remotamente. Criando..."
+            echo "⚠️ Branch '${BRANCH}' não encontrada. Branches disponíveis:"
+            git ls-remote --heads "${CLONE_URL}" | sed 's|refs/heads/||' | awk '{print "  - " $2}'
+            
+            echo "🔧 Criando nova branch a partir de develop/main..."
             git clone "${CLONE_URL}" fleet-repo
             cd fleet-repo
             
-            # Verifica se develop existe
-            if git ls-remote --exit-code --heads origin develop > /dev/null 2>&1; then
-              git checkout develop
-              git pull origin develop
-              git checkout -b "${BRANCH}"
-              echo "✅ Branch ${BRANCH} criada a partir de develop"
-            elif git ls-remote --exit-code --heads origin main > /dev/null 2>&1; then
-              git checkout main
-              git pull origin main
-              git checkout -b "${BRANCH}"
-              echo "✅ Branch ${BRANCH} criada a partir de main"
+            # Lista branches locais disponíveis
+            echo "📍 Branches locais disponíveis:"
+            git branch -a
+            
+            # Estratégia de fallback melhorada
+            if git show-ref --verify --quiet refs/remotes/origin/develop; then
+              echo "✅ Usando develop como base"
+              git checkout -b "${BRANCH}" origin/develop
+            elif git show-ref --verify --quiet refs/remotes/origin/main; then
+              echo "✅ Usando main como base"
+              git checkout -b "${BRANCH}" origin/main
+            elif git show-ref --verify --quiet refs/remotes/origin/master; then
+              echo "✅ Usando master como base"
+              git checkout -b "${BRANCH}" origin/master
             else
-              # Usa a branch padrão atual
+              echo "⚠️ Usando branch padrão"
               DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
-              git checkout "${DEFAULT_BRANCH}"
-              git pull origin "${DEFAULT_BRANCH}"
-              git checkout -b "${BRANCH}"
-              echo "✅ Branch ${BRANCH} criada a partir de ${DEFAULT_BRANCH}"
+              git checkout -b "${BRANCH}" "origin/${DEFAULT_BRANCH}"
             fi
+            
+            echo "📍 Nova branch criada: $(git branch --show-current)"
           fi
 
           # Instala yq se não estiver disponível
@@ -208,17 +249,37 @@ jobs:
             echo "📦 Instalando yq..."
             sudo apt-get update -qq
             sudo apt-get install -y -qq jq
-            curl -sSL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
-            chmod +x yq
-            sudo mv yq /usr/local/bin/
+            
+            # Download com retry
+            for i in {1..3}; do
+              if curl -sSL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq; then
+                chmod +x yq
+                sudo mv yq /usr/local/bin/
+                break
+              else
+                echo "⚠️ Tentativa ${i} de download do yq falhou"
+                sleep 2
+              fi
+            done
+            
+            if ! command -v yq &> /dev/null; then
+              echo "❌ Falha na instalação do yq"
+              exit 1
+            fi
           fi
+
+          echo "✅ yq versão: $(yq --version)"
 
           # Define paths dentro do repo
           MANIFEST_PATH="k8s/apps/${APP_NAME}/${ENVIRONMENT}"
           DEPLOYMENT_MANIFEST="${MANIFEST_PATH}/deployment.yaml"
           SERVICE_MANIFEST="${MANIFEST_PATH}/service.yaml"
 
-          echo "📁 Criando diretório de manifests se não existir: ${MANIFEST_PATH}"
+          echo "📁 Path dos manifests: ${MANIFEST_PATH}"
+          echo "📝 Deployment: ${DEPLOYMENT_MANIFEST}"
+          echo "🔧 Service: ${SERVICE_MANIFEST}"
+
+          # Cria diretório
           mkdir -p "$MANIFEST_PATH"
 
           # Cria template do deployment se não existir
@@ -256,7 +317,10 @@ jobs:
                   - name: APP_PORT
                     value: "${PORT}"
           EOF
+              else
+                echo "✅ deployment.yaml já existe"
               fi
+
               # Cria template do service se não existir
               if [ ! -f "$SERVICE_MANIFEST" ]; then
                 echo "📝 Criando service.yaml..."
@@ -279,24 +343,89 @@ jobs:
               targetPort: ${PORT}
             type: ClusterIP
           EOF
+              else
+                echo "✅ service.yaml já existe"
               fi
 
-          # Atualiza manifests existentes
-          echo "🔄 Atualizando manifests..."
-          yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$DEPLOYMENT_MANIFEST"
-          yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$DEPLOYMENT_MANIFEST"
-          yq e -i ".spec.template.spec.containers[0].env[1].value = \"${PORT}\"" "$DEPLOYMENT_MANIFEST"
-          yq e -i ".spec.ports[0].targetPort = ${PORT}" "$SERVICE_MANIFEST"
+              # Atualiza manifests existentes
+              echo "🔄 Atualizando manifests com nova imagem..."
+              echo "  🎯 Nova imagem: ${IMAGE}"
+              echo "  🔌 Nova porta: ${PORT}"
 
-          # Commit e push
-          if git diff --quiet --exit-code; then
-            echo "✅ Nenhuma alteração detectada nos manifests"
-          else
-            echo "💾 Commitando alterações..."
-            git add "$MANIFEST_PATH/"
-            git commit -m "Deploy ${APP_NAME} para ${ENVIRONMENT}: ${IMAGE} [ci skip]"
-            git push origin "${BRANCH}"
-            echo "✅ Manifests atualizados com sucesso!"
+              # Backup dos arquivos antes da modificação
+              cp "$DEPLOYMENT_MANIFEST" "${DEPLOYMENT_MANIFEST}.backup"
+              cp "$SERVICE_MANIFEST" "${SERVICE_MANIFEST}.backup"
+
+              # Aplica atualizações com verificação
+              if yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$DEPLOYMENT_MANIFEST"; then
+                echo "  ✅ Imagem atualizada no deployment"
+              else
+                echo "  ❌ Erro ao atualizar imagem no deployment"
+                exit 1
+              fi
+
+              if yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$DEPLOYMENT_MANIFEST"; then
+                echo "  ✅ Porta do container atualizada"
+              else
+                echo "  ❌ Erro ao atualizar porta do container"
+                exit 1
+              fi
+
+              if yq e -i ".spec.template.spec.containers[0].env[1].value = \"${PORT}\"" "$DEPLOYMENT_MANIFEST"; then
+                echo "  ✅ Variável de ambiente APP_PORT atualizada"
+              else
+                echo "  ⚠️ Aviso: Não foi possível atualizar APP_PORT (pode não existir)"
+              fi
+
+              if yq e -i ".spec.ports[0].targetPort = ${PORT}" "$SERVICE_MANIFEST"; then
+                echo "  ✅ Target port do service atualizada"
+              else
+                echo "  ❌ Erro ao atualizar target port do service"
+                exit 1
+              fi
+
+              # Mostra diff das alterações
+              echo "📋 Resumo das alterações:"
+              if git diff --name-only | grep -q .; then
+                git diff --name-only | while read file; do
+                  echo "  📝 Modificado: ${file}"
+                done
+                
+                echo "🔍 Detalhes das alterações:"
+                git diff --color=never | head -50
+              else
+                echo "  ✅ Nenhuma alteração detectada"
+              fi
+
+              # Commit e push
+              if git diff --quiet --exit-code; then
+                echo "✅ Nenhuma alteração detectada nos manifests"
+              else
+                echo "💾 Commitando alterações..."
+                git add "$MANIFEST_PATH/"
+                
+                # Commit com informações detalhadas
+                COMMIT_MSG="Deploy ${APP_NAME} para ${ENVIRONMENT}
+
+          - Imagem: ${IMAGE}
+          - Porta: ${PORT}
+          - Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+          [ci skip]"
+                
+                git commit -m "${COMMIT_MSG}"
+                
+                echo "🚀 Fazendo push para origin/${BRANCH}..."
+                git push origin "${BRANCH}"
+                echo "✅ Manifests atualizados com sucesso!"
+                
+                # Mostra o commit criado
+                echo "📋 Commit criado:"
+                git log -1 --oneline
+              fi
+
+          echo "🎉 Deploy finalizado com sucesso!"
+
       - name: Create/Update Monday Item
         if: success()
         env:
