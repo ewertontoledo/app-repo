@@ -1,14 +1,19 @@
-name: Deploy Multi-Environment
+name: Build and Deploy - Dynamic Environment
 
 on:
   push:
-    branches: [ "develop", "stage", "prod" ]
+    branches: [ "develop", "stage", "main" ]
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Ambiente de deploy (develop, stage, prod)'
-        required: false
-        default: ''
+        description: 'Target Environment'
+        required: true
+        default: 'develop'
+        type: choice
+        options:
+          - develop
+          - stage
+          - prod
       status:
         description: 'Status do deploy'
         required: true
@@ -20,31 +25,29 @@ jobs:
     outputs:
       environment: ${{ steps.detect.outputs.environment }}
       manifest_path: ${{ steps.detect.outputs.manifest_path }}
+      image_tag: ${{ steps.detect.outputs.image_tag }}
     steps:
-      - name: Detect Environment based on branch and input
+      - name: Detect Environment
         id: detect
         run: |
-          if [ -n "${{ github.event.inputs.environment }}" ]; then
-            ENV="${{ github.event.inputs.environment }}"
+          # Detecta ambiente baseado na branch ou input manual
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ENV="${{ inputs.environment }}"
           else
             case "${{ github.ref_name }}" in
               "develop") ENV="develop" ;;
               "stage") ENV="stage" ;;
-              "prod") ENV="prod" ;;
               "main") ENV="prod" ;;
               *) ENV="develop" ;;
             esac
           fi
-
-          MANIFEST_PATH="k8s/apps/${{ env.APP_NAME }}/$ENV"
-
+          
           echo "environment=$ENV" >> $GITHUB_OUTPUT
-          echo "manifest_path=$MANIFEST_PATH" >> $GITHUB_OUTPUT
-
-          echo "🎯 Branch: ${{ github.ref_name }}"
-          echo "🎯 Input environment: ${{ github.event.inputs.environment }}"
+          echo "manifest_path=k8s/apps/\${{ env.APP_NAME }}/$ENV" >> $GITHUB_OUTPUT
+          echo "image_tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+          
           echo "🎯 Ambiente detectado: $ENV"
-          echo "📁 Path do manifest: $MANIFEST_PATH"
+          echo "📁 Path do manifest: k8s/apps/\${{ env.APP_NAME }}/$ENV"
 
   build-and-push:
     runs-on: ubuntu-latest
@@ -55,18 +58,11 @@ jobs:
       TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
       ENVIRONMENT: ${{ needs.detect-environment.outputs.environment }}
       MANIFEST_PATH: ${{ needs.detect-environment.outputs.manifest_path }}
+      IMAGE_TAG: ${{ needs.detect-environment.outputs.image_tag }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: 🎯 Show Environment Info
-        run: |
-          echo "=========================================="
-          echo "🎯 DEPLOY PARA: ${{ ENVIRONMENT }}"
-          echo "🌐 Branch: ${{ github.ref_name }}"
-          echo "📦 Aplicação: ${APP_NAME}"
-          echo "📁 Path do manifest: ${MANIFEST_PATH}"
-          echo "=========================================="
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
@@ -81,17 +77,24 @@ jobs:
           username: ${{ secrets.OCIR_USERNAME }}
           password: ${{ secrets.OCIR_AUTH_TOKEN }}
 
-      - name: Build and push image dynamically based on environment
+      - name: Build and push dynamic image
         run: |
-          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/${ENVIRONMENT}/image/${APP_NAME}:${{ github.sha }}"
+          # Constrói imagem dinamicamente baseado no ambiente
+          IMAGE="${{ secrets.OCIR_REGISTRY }}/${{ secrets.IMAGE_NAMESPACE }}/${ENVIRONMENT}/image/${APP_NAME}:${IMAGE_TAG}"
           echo "IMAGE=$IMAGE" >> $GITHUB_ENV
-          echo "🎯 Ambiente: ${ENVIRONMENT}"
-          echo "🏗️ Imagem: $IMAGE"
+          
+          echo "🏗️ Buildando imagem para ambiente: ${ENVIRONMENT}"
+          echo "🎯 Imagem: $IMAGE"
+          
+          # Verifica se imagem já existe
           if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
             echo "✅ Imagem $IMAGE já existe"
           else
-            echo "📦 Buildando e pushando $IMAGE..."
-            docker build -t "$IMAGE" .
+            echo "🔨 Buildando e pushando $IMAGE..."
+            docker build -t "$IMAGE" \
+              --build-arg ENVIRONMENT=${ENVIRONMENT} \
+              --build-arg APP_PORT=${APP_PORT} \
+              .
             docker push "$IMAGE"
           fi
 
@@ -129,8 +132,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: trivy-report-${ENVIRONMENT}
-          path: trivy-reports/trivy-report-${ENVIRONMENT}.json
+          name: trivy-report-${{ env.ENVIRONMENT }}
+          path: trivy-reports/trivy-report-${{ env.ENVIRONMENT }}.json
 
       - name: Notify Teams on Trivy failure
         if: failure()
@@ -148,55 +151,50 @@ jobs:
         if: success()
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
-          FLEET_BRANCH: ${{ env.ENVIRONMENT }}
+          FLEET_BRANCH: ${{ secrets.FLEET_BRANCH }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
           IMAGE: ${{ env.IMAGE }}
           PORT: ${{ env.APP_PORT }}
-          APP_NAME: ${{ env.APP_NAME }}
-          ENVIRONMENT: ${{ needs.detect-environment.outputs.environment }}
         run: |
           set -euo pipefail
-
+          
           echo "🚀 Atualizando manifests para ambiente: ${ENVIRONMENT}"
+          echo "📁 Path do manifest: ${MANIFEST_PATH}"
           echo "🎯 Imagem: ${IMAGE}"
-
+          
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
+          
           REPO_NO_PROTO="${FLEET_REPO#https://}"
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
-          BRANCH="${FLEET_BRANCH}"
-
-          # Clona o repositório
-          git clone --branch "${BRANCH}" "${CLONE_URL}" fleet-repo || {
-            echo "⚠️ Branch ${BRANCH} não encontrada. Criando a partir de develop..."
-            git clone --branch develop "${CLONE_URL}" fleet-repo
-            cd fleet-repo
-            git checkout -b "${BRANCH}"
-            cd ..
-          }
-
+          BRANCH="${FLEET_BRANCH:-main}"
+          
+          git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
           cd fleet-repo
-          # Puxa commits remotos antes de qualquer alteração
-          git pull --rebase origin "${BRANCH}" || true
-
-          # Instala yq
+          
+          # Instala dependências
           sudo apt-get update -qq
           sudo apt-get install -y -qq jq
           curl -sSL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
           chmod +x yq
           sudo mv yq /usr/local/bin/
-
-          # Define paths dentro do repo
-          MANIFEST_PATH="k8s/apps/${APP_NAME}/${ENVIRONMENT}"
+          
+          # Define path dinâmico do manifest
           DEPLOYMENT_MANIFEST="${MANIFEST_PATH}/deployment.yaml"
           SERVICE_MANIFEST="${MANIFEST_PATH}/service.yaml"
-
-          echo "📁 Criando diretório de manifests se não existir: ${MANIFEST_PATH}"
-          mkdir -p "$MANIFEST_PATH"
-
-          # Cria templates se não existirem
+          
+          echo "📄 Manifest de deployment: $DEPLOYMENT_MANIFEST"
+          echo "📄 Manifest de service: $SERVICE_MANIFEST"
+          
+          # Verifica se diretório existe, se não cria
+          if [ ! -d "$(dirname "$DEPLOYMENT_MANIFEST")" ]; then
+            echo "📁 Criando diretório: $(dirname "$DEPLOYMENT_MANIFEST")"
+            mkdir -p "$(dirname "$DEPLOYMENT_MANIFEST")"
+          fi
+          
+          # Verifica se manifests existem, se não cria templates
           if [ ! -f "$DEPLOYMENT_MANIFEST" ]; then
+            echo "📝 Criando template de deployment para ${ENVIRONMENT}"
             cat > "$DEPLOYMENT_MANIFEST" << EOF
           apiVersion: apps/v1
           kind: Deployment
@@ -229,9 +227,11 @@ jobs:
                   - name: APP_PORT
                     value: "${PORT}"
           EOF
-              fi
-              if [ ! -f "$SERVICE_MANIFEST" ]; then
-                cat > "$SERVICE_MANIFEST" << EOF
+          fi
+          
+          if [ ! -f "$SERVICE_MANIFEST" ]; then
+            echo "📝 Criando template de service para ${ENVIRONMENT}"
+            cat > "$SERVICE_MANIFEST" << EOF
           apiVersion: v1
           kind: Service
           metadata:
@@ -250,24 +250,27 @@ jobs:
               targetPort: ${PORT}
             type: ClusterIP
           EOF
-              fi
-
-          # Atualiza manifests existentes
+          fi
+          
+          # Atualiza manifests
+          echo "🔄 Atualizando deployment manifest..."
           yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$DEPLOYMENT_MANIFEST"
           yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$DEPLOYMENT_MANIFEST"
           yq e -i ".spec.template.spec.containers[0].env[1].value = \"${PORT}\"" "$DEPLOYMENT_MANIFEST"
+          
+          echo "🔄 Atualizando service manifest..."
           yq e -i ".spec.ports[0].targetPort = ${PORT}" "$SERVICE_MANIFEST"
-
-          # Commit e push
+          
+          # Verifica se houve mudanças
           if git diff --quiet --exit-code; then
             echo "✅ Nenhuma alteração detectada nos manifests"
           else
-            git add "$MANIFEST_PATH/"
+            echo "📝 Commitando alterações..."
+            git add "${MANIFEST_PATH}/"
             git commit -m "Deploy ${APP_NAME} para ${ENVIRONMENT}: ${IMAGE} [ci skip]"
             git push origin "${BRANCH}"
             echo "✅ Manifests atualizados com sucesso!"
           fi
-
 
       - name: Create/Update Monday Item
         if: success()
@@ -278,85 +281,94 @@ jobs:
           BOARD_ID: "10018892855"
         run: |
           set -eo pipefail
+          
           ITEM_NAME="Deploy ${ENVIRONMENT} - $APP_NAME"
           IMAGE_INFO="Env: ${ENVIRONMENT} | Imagem: $IMAGE"
+          
           echo "🚀 Verificando item: $ITEM_NAME"
-
+          
+          # Busca itens existentes
           QUERY=$(jq -n --arg board_id "$BOARD_ID" \
             '{query: "query { boards(ids: [\($board_id)]) { items_page { items { id name column_values { id text } } } } }"}')
-
+          
           RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
             -H "Authorization: Bearer $MONDAY_API_TOKEN" \
             -H "Content-Type: application/json" \
             --data-raw "$QUERY")
-
+          
+          # Verifica erros
           if echo "$RESPONSE" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
             echo "🚫 Erro da API do Monday. Aborting."
             echo "$RESPONSE" | jq .
             exit 1
           fi
-
+          
+          # Extrai ITEM_ID e STATUS
           ITEM_ID=$(echo "$RESPONSE" | jq -r --arg name "$ITEM_NAME" \
             '.data.boards[0].items_page.items[]? | select(.name == $name) | .id // empty')
           CURRENT_STATUS=$(echo "$RESPONSE" | jq -r --arg name "$ITEM_NAME" \
             '.data.boards[0].items_page.items[]? | select(.name == $name) | (.column_values? // []) | map(select(.id=="project_status"))[0].text // empty')
-
+          
           echo "ITEM_ID=${ITEM_ID:-<empty>}"
           echo "CURRENT_STATUS=${CURRENT_STATUS:-<empty>}"
-
+          
+          # Se não existe, cria novo item
           if [ -z "$ITEM_ID" ]; then
             echo "➕ Criando item para ambiente ${ENVIRONMENT}..."
+            
+            # Define status inicial baseado no ambiente
             case "$ENVIRONMENT" in
-              "develop") INITIAL_STATUS="Para Teste" ;;
-              "stage") INITIAL_STATUS="Para Teste" ;;
-              "prod") INITIAL_STATUS="Aprovado para Prod" ;;
+              "develop") INITIAL_STATUS="Em Desenvolvimento" ;;
+              "stage") INITIAL_STATUS="Em Teste" ;;
+              "prod") INITIAL_STATUS="Em Produção" ;;
               *) INITIAL_STATUS="Não iniciado" ;;
             esac
-
+            
             COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" --arg status "$INITIAL_STATUS" \
               '{project_status: {label: $status}, text_mkvn9dqm: $info}')
+            
             COLUMN_VALUES_ESCAPED=$(echo "$COLUMN_VALUES" | jq -Rs .)
             PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --arg board_id "$BOARD_ID" --arg colvals "$COLUMN_VALUES_ESCAPED" \
               '{query: "mutation { create_item(board_id: \($board_id|tonumber), item_name: \"\($name)\", column_values: \($colvals)) { id name } }"}')
-
+            
             CREATE_RESP=$(curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: Bearer $MONDAY_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data-raw "$PAYLOAD")
-
+            
             if echo "$CREATE_RESP" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
               echo "🚫 Erro ao criar item no Monday."
               echo "$CREATE_RESP" | jq .
               exit 1
             fi
+            
             echo "✅ Item criado com sucesso para ${ENVIRONMENT}!"
           else
             echo "🔄 Atualizando item existente para ${ENVIRONMENT}..."
             IMAGE_ESCAPED=$(echo "$IMAGE_INFO" | jq -Rs .)
             UPDATE_PAYLOAD=$(jq -n --arg item_id "$ITEM_ID" --arg board_id "$BOARD_ID" --arg info "$IMAGE_ESCAPED" \
               '{query: "mutation { change_simple_column_value(board_id: \($board_id|tonumber), item_id: \($item_id|tonumber), column_id: \"text_mkvn9dqm\", value: \($info)) { id } }"}')
-
+            
             UPDATE_RESP=$(curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: Bearer $MONDAY_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data-raw "$UPDATE_PAYLOAD")
-
+            
             if echo "$UPDATE_RESP" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
               echo "🚫 Erro ao atualizar item no Monday."
               echo "$UPDATE_RESP" | jq .
               exit 1
             fi
+            
             echo "✅ Item atualizado com sucesso para ${ENVIRONMENT}!"
           fi
 
-      - name: 🎉 Deploy Summary
+      - name: Deploy Summary
         if: always()
         run: |
-          echo "=========================================="
-          echo "🎉 DEPLOY FINALIZADO"
-          echo "=========================================="
-          echo "🎯 AMBIENTE: ${ENVIRONMENT^^}"
-          echo "🌐 BRANCH: ${{ github.ref_name }}"
+          echo "🎉 Deploy Summary"
+          echo "=================="
+          echo "🎯 Ambiente: ${ENVIRONMENT}"
           echo "🏗️ Aplicação: ${APP_NAME}"
           echo "🎨 Imagem: ${IMAGE}"
           echo "📁 Manifests: ${MANIFEST_PATH}"
