@@ -167,7 +167,7 @@ jobs:
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
           BRANCH="${FLEET_BRANCH}"
 
-          # Clona o repositório na branch desejada, ou cria a branch se não existir
+          # Clona o repositório
           git clone --branch "${BRANCH}" "${CLONE_URL}" fleet-repo || {
             echo "⚠️ Branch ${BRANCH} não encontrada. Criando a partir de develop..."
             git clone --branch develop "${CLONE_URL}" fleet-repo
@@ -178,7 +178,7 @@ jobs:
 
           cd fleet-repo
 
-          # Puxa commits remotos
+          # Puxa commits remotos antes de qualquer alteração
           git pull --rebase origin "${BRANCH}" || true
 
           # Instala yq
@@ -188,7 +188,7 @@ jobs:
           chmod +x yq
           sudo mv yq /usr/local/bin/
 
-          # Define path relativo dentro do repo clonado
+          # Define paths dentro do repo
           MANIFEST_PATH="k8s/apps/${APP_NAME}/${ENVIRONMENT}"
           DEPLOYMENT_MANIFEST="${MANIFEST_PATH}/deployment.yaml"
           SERVICE_MANIFEST="${MANIFEST_PATH}/service.yaml"
@@ -254,21 +254,22 @@ jobs:
           EOF
               fi
 
-              # Atualiza manifests com a nova imagem e porta
-              yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$DEPLOYMENT_MANIFEST"
-              yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$DEPLOYMENT_MANIFEST"
-              yq e -i ".spec.template.spec.containers[0].env[1].value = \"${PORT}\"" "$DEPLOYMENT_MANIFEST"
-              yq e -i ".spec.ports[0].targetPort = ${PORT}" "$SERVICE_MANIFEST"
+          # Atualiza manifests existentes
+          yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$DEPLOYMENT_MANIFEST"
+          yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$DEPLOYMENT_MANIFEST"
+          yq e -i ".spec.template.spec.containers[0].env[1].value = \"${PORT}\"" "$DEPLOYMENT_MANIFEST"
+          yq e -i ".spec.ports[0].targetPort = ${PORT}" "$SERVICE_MANIFEST"
 
-              # Commit e push se houver mudanças
-              if git diff --quiet --exit-code; then
-                echo "✅ Nenhuma alteração detectada nos manifests"
-              else
-                git add "$MANIFEST_PATH/"
-                git commit -m "Deploy ${APP_NAME} para ${ENVIRONMENT}: ${IMAGE} [ci skip]"
-                git push origin "${BRANCH}"
-                echo "✅ Manifests atualizados com sucesso!"
-              fi
+          # Commit e push
+          if git diff --quiet --exit-code; then
+            echo "✅ Nenhuma alteração detectada nos manifests"
+          else
+            git add "$MANIFEST_PATH/"
+            git commit -m "Deploy ${APP_NAME} para ${ENVIRONMENT}: ${IMAGE} [ci skip]"
+            git push origin "${BRANCH}"
+            echo "✅ Manifests atualizados com sucesso!"
+          fi
+
 
       - name: Create/Update Monday Item
         if: success()
@@ -293,7 +294,7 @@ jobs:
 
           if echo "$RESPONSE" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
             echo "🚫 Erro da API do Monday. Aborting."
-            echo "$RESPONSE" | jåq .
+            echo "$RESPONSE" | jq .
             exit 1
           fi
 
