@@ -153,7 +153,7 @@ jobs:
         if: success()
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
-          FLEET_BRANCH: ${{ env.ENVIRONMENT }}      # branch será igual ao ambiente
+          FLEET_BRANCH: ${{ env.ENVIRONMENT }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
           IMAGE: ${{ env.IMAGE }}
           PORT: ${{ env.APP_PORT }}
@@ -168,31 +168,23 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          # URL do repositório
           REPO_NO_PROTO="${FLEET_REPO#https://}"
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
+          BRANCH="${FLEET_BRANCH}"
 
-          # Limpa possíveis barras extras
-          MANIFEST_PATH_CLEAN=$(echo "${MANIFEST_PATH}" | sed 's#//*#/#g')
-
-          # Verifica se a branch existe no remoto
-          if git ls-remote --heads "${CLONE_URL}" "${FLEET_BRANCH}" | grep "${FLEET_BRANCH}" >/dev/null; then
-            echo "✅ Branch ${FLEET_BRANCH} existe. Clonando..."
-            git clone --depth 1 --branch "${FLEET_BRANCH}" "${CLONE_URL}" fleet-repo
-          else
-            BASE_BRANCH="develop"
-            if [ "${FLEET_BRANCH}" == "prod" ]; then
-              BASE_BRANCH="stage"
-            fi
-            echo "⚠️ Branch ${FLEET_BRANCH} não encontrada. Criando a partir de ${BASE_BRANCH}..."
-            git clone --depth 1 --branch "${BASE_BRANCH}" "${CLONE_URL}" fleet-repo
+          # Clona o repositório
+          git clone --branch "${BRANCH}" "${CLONE_URL}" fleet-repo || {
+            echo "⚠️ Branch ${BRANCH} não encontrada. Criando a partir de develop..."
+            git clone --branch develop "${CLONE_URL}" fleet-repo
             cd fleet-repo
-            git checkout -b "${FLEET_BRANCH}"
-            git push origin "${FLEET_BRANCH}"
+            git checkout -b "${BRANCH}"
             cd ..
-          fi
+          }
 
           cd fleet-repo
+
+          # Puxa commits remotos antes de qualquer alteração
+          git pull --rebase origin "${BRANCH}" || true
 
           # Instala yq
           sudo apt-get update -qq
@@ -201,8 +193,8 @@ jobs:
           chmod +x yq
           sudo mv yq /usr/local/bin/
 
-          DEPLOYMENT_MANIFEST="${MANIFEST_PATH_CLEAN}/deployment.yaml"
-          SERVICE_MANIFEST="${MANIFEST_PATH_CLEAN}/service.yaml"
+          DEPLOYMENT_MANIFEST="${MANIFEST_PATH}/deployment.yaml"
+          SERVICE_MANIFEST="${MANIFEST_PATH}/service.yaml"
 
           mkdir -p "$(dirname "$DEPLOYMENT_MANIFEST")"
 
@@ -264,21 +256,22 @@ jobs:
           EOF
               fi
 
-          # Atualiza manifests
-          yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$DEPLOYMENT_MANIFEST"
-          yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$DEPLOYMENT_MANIFEST"
-          yq e -i ".spec.template.spec.containers[0].env[1].value = \"${PORT}\"" "$DEPLOYMENT_MANIFEST"
-          yq e -i ".spec.ports[0].targetPort = ${PORT}" "$SERVICE_MANIFEST"
+              # Atualiza manifests
+              yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$DEPLOYMENT_MANIFEST"
+              yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$DEPLOYMENT_MANIFEST"
+              yq e -i ".spec.template.spec.containers[0].env[1].value = \"${PORT}\"" "$DEPLOYMENT_MANIFEST"
+              yq e -i ".spec.ports[0].targetPort = ${PORT}" "$SERVICE_MANIFEST"
 
-          # Commit e push
-          if git diff --quiet --exit-code; then
-            echo "✅ Nenhuma alteração detectada nos manifests"
-          else
-            git add "${MANIFEST_PATH_CLEAN}/"
-            git commit -m "Deploy ${APP_NAME} para ${ENVIRONMENT}: ${IMAGE} [ci skip]"
-            git push origin "${FLEET_BRANCH}"
-            echo "✅ Manifests atualizados com sucesso!"
-          fi
+              # Commit e push
+              if git diff --quiet --exit-code; then
+                echo "✅ Nenhuma alteração detectada nos manifests"
+              else
+                git add "${MANIFEST_PATH}/"
+                git commit -m "Deploy ${APP_NAME} para ${ENVIRONMENT}: ${IMAGE} [ci skip]"
+                git push origin "${BRANCH}"
+                echo "✅ Manifests atualizados com sucesso!"
+              fi
+
 
 
       - name: Create/Update Monday Item
