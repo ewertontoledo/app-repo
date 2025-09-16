@@ -36,22 +36,15 @@ jobs:
             esac
           fi
 
+          MANIFEST_PATH="k8s/apps/${{ env.APP_NAME }}/$ENV"
+
           echo "environment=$ENV" >> $GITHUB_OUTPUT
-          echo "manifest_path=k8s/apps/\${{ env.APP_NAME }}/$ENV" >> $GITHUB_OUTPUT
+          echo "manifest_path=$MANIFEST_PATH" >> $GITHUB_OUTPUT
 
           echo "🎯 Branch: ${{ github.ref_name }}"
           echo "🎯 Input environment: ${{ github.event.inputs.environment }}"
           echo "🎯 Ambiente detectado: $ENV"
-          echo "📁 Path do manifest: k8s/apps/\${{ env.APP_NAME }}/$ENV"
-
-          case "$ENV" in
-            "develop") WORKFLOW_TITLE="🚀 Deploy Development" ;;
-            "stage") WORKFLOW_TITLE="🔄 Deploy Staging" ;;
-            "prod") WORKFLOW_TITLE="🎯 Deploy Production" ;;
-            *) WORKFLOW_TITLE="🔧 Deploy $ENV" ;;
-          esac
-          echo "workflow_title=$WORKFLOW_TITLE" >> $GITHUB_OUTPUT
-          echo "📋 Título do workflow: $WORKFLOW_TITLE"
+          echo "📁 Path do manifest: $MANIFEST_PATH"
 
   build-and-push:
     runs-on: ubuntu-latest
@@ -61,6 +54,7 @@ jobs:
       APP_PORT: 9000
       TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
       ENVIRONMENT: ${{ needs.detect-environment.outputs.environment }}
+      MANIFEST_PATH: ${{ needs.detect-environment.outputs.manifest_path }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -68,9 +62,10 @@ jobs:
       - name: 🎯 Show Environment Info
         run: |
           echo "=========================================="
-          echo "🎯 DEPLOY PARA: ${{ needs.detect-environment.outputs.environment }}"
+          echo "🎯 DEPLOY PARA: ${{ ENVIRONMENT }}"
           echo "🌐 Branch: ${{ github.ref_name }}"
           echo "📦 Aplicação: ${APP_NAME}"
+          echo "📁 Path do manifest: ${MANIFEST_PATH}"
           echo "=========================================="
 
       - name: Set up QEMU
@@ -134,8 +129,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: trivy-report-${{ env.ENVIRONMENT }}
-          path: trivy-reports/trivy-report-${{ env.ENVIRONMENT }}.json
+          name: trivy-report-${ENVIRONMENT}
+          path: trivy-reports/trivy-report-${ENVIRONMENT}.json
 
       - name: Notify Teams on Trivy failure
         if: failure()
@@ -158,11 +153,12 @@ jobs:
           IMAGE: ${{ env.IMAGE }}
           PORT: ${{ env.APP_PORT }}
           APP_NAME: ${{ env.APP_NAME }}
-          ENVIRONMENT: ${{ needs.detect-environment.outputs.environment }}
+          ENVIRONMENT: ${{ ENVIRONMENT }}
+          MANIFEST_PATH: ${{ MANIFEST_PATH }}
         run: |
           set -euo pipefail
-
           echo "🚀 Atualizando manifests para ambiente: ${ENVIRONMENT}"
+          echo "📁 Path do manifest: ${MANIFEST_PATH}"
           echo "🎯 Imagem: ${IMAGE}"
 
           git config --global user.name "github-actions[bot]"
@@ -172,7 +168,6 @@ jobs:
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
           BRANCH="${FLEET_BRANCH}"
 
-          # Clona o repositório
           git clone --branch "${BRANCH}" "${CLONE_URL}" fleet-repo || {
             echo "⚠️ Branch ${BRANCH} não encontrada. Criando a partir de develop..."
             git clone --branch develop "${CLONE_URL}" fleet-repo
@@ -183,25 +178,18 @@ jobs:
 
           cd fleet-repo
 
-          # Puxa commits remotos antes de qualquer alteração
           git pull --rebase origin "${BRANCH}" || true
 
-          # Instala yq
           sudo apt-get update -qq
           sudo apt-get install -y -qq jq
           curl -sSL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
           chmod +x yq
           sudo mv yq /usr/local/bin/
 
-          # Define path relativo dentro do repo
-          MANIFEST_PATH="k8s/apps/${APP_NAME}/${ENVIRONMENT}"
+          mkdir -p "${MANIFEST_PATH}"
           DEPLOYMENT_MANIFEST="${MANIFEST_PATH}/deployment.yaml"
           SERVICE_MANIFEST="${MANIFEST_PATH}/service.yaml"
 
-          echo "📁 Criando diretório de manifests se não existir: ${MANIFEST_PATH}"
-          mkdir -p "$MANIFEST_PATH"
-
-          # Cria templates se não existirem
           if [ ! -f "$DEPLOYMENT_MANIFEST" ]; then
             cat > "$DEPLOYMENT_MANIFEST" << EOF
           apiVersion: apps/v1
@@ -234,38 +222,36 @@ jobs:
                     value: ${ENVIRONMENT}
                   - name: APP_PORT
                     value: "${PORT}"
-              EOF
-                  fi
+                    EOF
+                              fi
 
-                  if [ ! -f "$SERVICE_MANIFEST" ]; then
-                    cat > "$SERVICE_MANIFEST" << EOF
-              apiVersion: v1
-              kind: Service
-              metadata:
-                name: ${APP_NAME}-${ENVIRONMENT}-service
-                namespace: ${ENVIRONMENT}
-                labels:
-                  app: ${APP_NAME}
-                  environment: ${ENVIRONMENT}
-              spec:
-                selector:
-                  app: ${APP_NAME}
-                  environment: ${ENVIRONMENT}
-                ports:
-                - protocol: TCP
-                  port: 80
-                  targetPort: ${PORT}
-                type: ClusterIP
-              EOF
-                  fi
+                              if [ ! -f "$SERVICE_MANIFEST" ]; then
+                                cat > "$SERVICE_MANIFEST" << EOF
+                    apiVersion: v1
+                    kind: Service
+                    metadata:
+                      name: ${APP_NAME}-${ENVIRONMENT}-service
+                      namespace: ${ENVIRONMENT}
+                      labels:
+                        app: ${APP_NAME}
+                        environment: ${ENVIRONMENT}
+                    spec:
+                      selector:
+                        app: ${APP_NAME}
+                        environment: ${ENVIRONMENT}
+                      ports:
+                      - protocol: TCP
+                        port: 80
+                        targetPort: ${PORT}
+                      type: ClusterIP
+                    EOF
+                              fi
 
-              # Atualiza manifests
               yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$DEPLOYMENT_MANIFEST"
               yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$DEPLOYMENT_MANIFEST"
               yq e -i ".spec.template.spec.containers[0].env[1].value = \"${PORT}\"" "$DEPLOYMENT_MANIFEST"
               yq e -i ".spec.ports[0].targetPort = ${PORT}" "$SERVICE_MANIFEST"
 
-              # Commit e push
               if git diff --quiet --exit-code; then
                 echo "✅ Nenhuma alteração detectada nos manifests"
               else
@@ -274,7 +260,6 @@ jobs:
                 git push origin "${BRANCH}"
                 echo "✅ Manifests atualizados com sucesso!"
               fi
-
 
 
       - name: Create/Update Monday Item
