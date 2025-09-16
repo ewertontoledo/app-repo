@@ -177,7 +177,6 @@ jobs:
           }
 
           cd fleet-repo
-
           # Puxa commits remotos antes de qualquer alteração
           git pull --rebase origin "${BRANCH}" || true
 
@@ -231,7 +230,6 @@ jobs:
                     value: "${PORT}"
           EOF
               fi
-
               if [ ! -f "$SERVICE_MANIFEST" ]; then
                 cat > "$SERVICE_MANIFEST" << EOF
           apiVersion: v1
