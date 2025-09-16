@@ -30,7 +30,7 @@ jobs:
             case "${{ github.ref_name }}" in
               "develop") ENV="develop" ;;
               "stage") ENV="stage" ;;
-              "prod"|"main") ENV="prod" ;;
+              "prod") ENV="prod" ;;
               *) ENV="develop" ;;
             esac
           fi
@@ -140,11 +140,18 @@ jobs:
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
           BRANCH="${FLEET_BRANCH}"
 
-          # Se a branch não existir, cria a partir da main
+          # Define branch base dependendo do ambiente
+          if [ "${BRANCH}" == "prod" ]; then
+            BASE_BRANCH="stage"
+          else
+            BASE_BRANCH="develop"
+          fi
+
+          # Clona a branch do ambiente se existir, senão cria a partir da branch base
           if git ls-remote --heads "${CLONE_URL}" "${BRANCH}" | grep "${BRANCH}" >/dev/null; then
             git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
           else
-            git clone --depth 1 --branch main "${CLONE_URL}" fleet-repo
+            git clone --depth 1 --branch "${BASE_BRANCH}" "${CLONE_URL}" fleet-repo
             cd fleet-repo
             git checkout -b "${BRANCH}"
             git push origin "${BRANCH}"
@@ -152,6 +159,7 @@ jobs:
           fi
           cd fleet-repo
 
+          # Instala yq
           sudo apt-get update -qq
           sudo apt-get install -y -qq jq
           curl -sSL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
