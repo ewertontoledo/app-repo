@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       environment: ${{ steps.detect.outputs.environment }}
-      manifest_path: ${{ steps.detect.outputs.manifest_path }}
+      workflow_title: ${{ steps.detect.outputs.workflow_title }}
     steps:
       - name: Detect Environment based on branch and input
         id: detect
@@ -30,16 +30,13 @@ jobs:
             case "${{ github.ref_name }}" in
               "develop") ENV="develop" ;;
               "stage") ENV="stage" ;;
-              "prod") ENV="prod" ;;
-              "main") ENV="prod" ;;
+              "prod"|"main") ENV="prod" ;;
               *) ENV="develop" ;;
             esac
           fi
 
           echo "environment=$ENV" >> $GITHUB_OUTPUT
-          echo "manifest_path=k8s/apps/${{ env.APP_NAME }}/$ENV" >> $GITHUB_OUTPUT
 
-          echo "🎯 Ambiente detectado: $ENV"
           case "$ENV" in
             "develop") WORKFLOW_TITLE="🚀 Deploy Development" ;;
             "stage") WORKFLOW_TITLE="🔄 Deploy Staging" ;;
@@ -56,6 +53,7 @@ jobs:
       APP_PORT: 9000
       TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
       ENVIRONMENT: ${{ needs.detect-environment.outputs.environment }}
+      MANIFEST_PATH: k8s/apps/app-teste-2/${{ needs.detect-environment.outputs.environment }}
 
     steps:
       - name: Checkout
@@ -64,9 +62,10 @@ jobs:
       - name: 🎯 Show Environment Info
         run: |
           echo "=========================================="
-          echo "🎯 DEPLOY PARA: ${{ needs.detect-environment.outputs.environment }}"
+          echo "🎯 DEPLOY PARA: ${ENVIRONMENT}"
           echo "🌐 Branch: ${{ github.ref_name }}"
           echo "📦 Aplicação: ${APP_NAME}"
+          echo "📁 Path Manifests: ${MANIFEST_PATH}"
           echo "=========================================="
 
       - name: Set up QEMU
@@ -122,11 +121,11 @@ jobs:
         if: success()
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
-          FLEET_BRANCH: ${{ needs.detect-environment.outputs.environment }}
+          FLEET_BRANCH: ${{ env.ENVIRONMENT }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
           IMAGE: ${{ env.IMAGE }}
           PORT: ${{ env.APP_PORT }}
-          MANIFEST_PATH: ${{ needs.detect-environment.outputs.manifest_path }}
+          MANIFEST_PATH: ${{ env.MANIFEST_PATH }}
         run: |
           set -euo pipefail
           
@@ -141,7 +140,16 @@ jobs:
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
           BRANCH="${FLEET_BRANCH}"
 
-          git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
+          # Se a branch não existir, cria a partir da main
+          if git ls-remote --heads "${CLONE_URL}" "${BRANCH}" | grep "${BRANCH}" >/dev/null; then
+            git clone --depth 1 --branch "${BRANCH}" "${CLONE_URL}" fleet-repo
+          else
+            git clone --depth 1 --branch main "${CLONE_URL}" fleet-repo
+            cd fleet-repo
+            git checkout -b "${BRANCH}"
+            git push origin "${BRANCH}"
+            cd ..
+          fi
           cd fleet-repo
 
           sudo apt-get update -qq
@@ -153,9 +161,7 @@ jobs:
           DEPLOYMENT_MANIFEST="${MANIFEST_PATH}/deployment.yaml"
           SERVICE_MANIFEST="${MANIFEST_PATH}/service.yaml"
 
-          if [ ! -d "$(dirname "$DEPLOYMENT_MANIFEST")" ]; then
-            mkdir -p "$(dirname "$DEPLOYMENT_MANIFEST")"
-          fi
+          mkdir -p "$(dirname "$DEPLOYMENT_MANIFEST")"
 
           # Cria templates se não existirem
           if [ ! -f "$DEPLOYMENT_MANIFEST" ]; then
@@ -213,7 +219,7 @@ jobs:
               targetPort: ${PORT}
             type: ClusterIP
           EOF
-          fi
+                    fi
 
           # Atualiza manifests
           yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$DEPLOYMENT_MANIFEST"
