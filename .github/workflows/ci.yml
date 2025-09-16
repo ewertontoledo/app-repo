@@ -198,60 +198,60 @@ jobs:
           # Cria templates se não existirem
           if [ ! -f "$DEPLOYMENT_MANIFEST" ]; then
             cat > "$DEPLOYMENT_MANIFEST" << EOF
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: ${APP_NAME}-${ENVIRONMENT}
-        namespace: ${ENVIRONMENT}
-        labels:
-          app: ${APP_NAME}
-          environment: ${ENVIRONMENT}
-      spec:
-        replicas: 1
-        selector:
-          matchLabels:
-            app: ${APP_NAME}
-            environment: ${ENVIRONMENT}
-        template:
+          apiVersion: apps/v1
+          kind: Deployment
           metadata:
+            name: ${APP_NAME}-${ENVIRONMENT}
+            namespace: ${ENVIRONMENT}
             labels:
               app: ${APP_NAME}
               environment: ${ENVIRONMENT}
           spec:
-            containers:
-            - name: ${APP_NAME}
-              image: ${IMAGE}
-              ports:
-              - containerPort: ${PORT}
-              env:
-              - name: ENVIRONMENT
-                value: ${ENVIRONMENT}
-              - name: APP_PORT
-                value: "${PORT}"
-      EOF
-          fi
+            replicas: 1
+            selector:
+              matchLabels:
+                app: ${APP_NAME}
+                environment: ${ENVIRONMENT}
+            template:
+              metadata:
+                labels:
+                  app: ${APP_NAME}
+                  environment: ${ENVIRONMENT}
+              spec:
+                containers:
+                - name: ${APP_NAME}
+                  image: ${IMAGE}
+                  ports:
+                  - containerPort: ${PORT}
+                  env:
+                  - name: ENVIRONMENT
+                    value: ${ENVIRONMENT}
+                  - name: APP_PORT
+                    value: "${PORT}"
+          EOF
+              fi
 
-          if [ ! -f "$SERVICE_MANIFEST" ]; then
-            cat > "$SERVICE_MANIFEST" << EOF
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: ${APP_NAME}-${ENVIRONMENT}-service
-        namespace: ${ENVIRONMENT}
-        labels:
-          app: ${APP_NAME}
-          environment: ${ENVIRONMENT}
-      spec:
-        selector:
-          app: ${APP_NAME}
-          environment: ${ENVIRONMENT}
-        ports:
-        - protocol: TCP
-          port: 80
-          targetPort: ${PORT}
-        type: ClusterIP
-      EOF
-          fi
+              if [ ! -f "$SERVICE_MANIFEST" ]; then
+                cat > "$SERVICE_MANIFEST" << EOF
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${APP_NAME}-${ENVIRONMENT}-service
+            namespace: ${ENVIRONMENT}
+            labels:
+              app: ${APP_NAME}
+              environment: ${ENVIRONMENT}
+          spec:
+            selector:
+              app: ${APP_NAME}
+              environment: ${ENVIRONMENT}
+            ports:
+            - protocol: TCP
+              port: 80
+              targetPort: ${PORT}
+            type: ClusterIP
+          EOF
+              fi
 
           # Atualiza manifests existentes com yq
           yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$DEPLOYMENT_MANIFEST"
@@ -268,6 +268,7 @@ jobs:
             git push origin "${BRANCH}"
             echo "✅ Manifests atualizados com sucesso!"
           fi
+
 
 
       - name: Create/Update Monday Item
