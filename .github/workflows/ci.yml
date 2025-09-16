@@ -157,12 +157,12 @@ jobs:
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
           IMAGE: ${{ env.IMAGE }}
           PORT: ${{ env.APP_PORT }}
-          MANIFEST_PATH: ${{ env.MANIFEST_PATH }}
+          APP_NAME: ${{ env.APP_NAME }}
+          ENVIRONMENT: ${{ needs.detect-environment.outputs.environment }}
         run: |
           set -euo pipefail
 
           echo "🚀 Atualizando manifests para ambiente: ${ENVIRONMENT}"
-          echo "📁 Path do manifest: ${MANIFEST_PATH}"
           echo "🎯 Imagem: ${IMAGE}"
 
           git config --global user.name "github-actions[bot]"
@@ -193,10 +193,13 @@ jobs:
           chmod +x yq
           sudo mv yq /usr/local/bin/
 
+          # Define path relativo dentro do repo
+          MANIFEST_PATH="k8s/apps/${APP_NAME}/${ENVIRONMENT}"
           DEPLOYMENT_MANIFEST="${MANIFEST_PATH}/deployment.yaml"
           SERVICE_MANIFEST="${MANIFEST_PATH}/service.yaml"
 
-          mkdir -p "$(dirname "$DEPLOYMENT_MANIFEST")"
+          echo "📁 Criando diretório de manifests se não existir: ${MANIFEST_PATH}"
+          mkdir -p "$MANIFEST_PATH"
 
           # Cria templates se não existirem
           if [ ! -f "$DEPLOYMENT_MANIFEST" ]; then
@@ -231,30 +234,30 @@ jobs:
                     value: ${ENVIRONMENT}
                   - name: APP_PORT
                     value: "${PORT}"
-          EOF
-              fi
+              EOF
+                  fi
 
-              if [ ! -f "$SERVICE_MANIFEST" ]; then
-                cat > "$SERVICE_MANIFEST" << EOF
-          apiVersion: v1
-          kind: Service
-          metadata:
-            name: ${APP_NAME}-${ENVIRONMENT}-service
-            namespace: ${ENVIRONMENT}
-            labels:
-              app: ${APP_NAME}
-              environment: ${ENVIRONMENT}
-          spec:
-            selector:
-              app: ${APP_NAME}
-              environment: ${ENVIRONMENT}
-            ports:
-            - protocol: TCP
-              port: 80
-              targetPort: ${PORT}
-            type: ClusterIP
-          EOF
-              fi
+                  if [ ! -f "$SERVICE_MANIFEST" ]; then
+                    cat > "$SERVICE_MANIFEST" << EOF
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: ${APP_NAME}-${ENVIRONMENT}-service
+                namespace: ${ENVIRONMENT}
+                labels:
+                  app: ${APP_NAME}
+                  environment: ${ENVIRONMENT}
+              spec:
+                selector:
+                  app: ${APP_NAME}
+                  environment: ${ENVIRONMENT}
+                ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: ${PORT}
+                type: ClusterIP
+              EOF
+                  fi
 
               # Atualiza manifests
               yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$DEPLOYMENT_MANIFEST"
@@ -266,7 +269,7 @@ jobs:
               if git diff --quiet --exit-code; then
                 echo "✅ Nenhuma alteração detectada nos manifests"
               else
-                git add "${MANIFEST_PATH}/"
+                git add "$MANIFEST_PATH/"
                 git commit -m "Deploy ${APP_NAME} para ${ENVIRONMENT}: ${IMAGE} [ci skip]"
                 git push origin "${BRANCH}"
                 echo "✅ Manifests atualizados com sucesso!"
