@@ -154,6 +154,7 @@ jobs:
           APP_NAME: "app-teste-2"
           ENVIRONMENT: ${{ needs.detect-environment.outputs.environment }}
         # Script corrigido baseado no que você está usando
+
         run: |
           set -euo pipefail
           
@@ -311,7 +312,7 @@ jobs:
               fi
               
               echo "🎉 Deploy finalizado!"
-              
+
       - name: Create/Update Monday Item
         if: success()
         env:
