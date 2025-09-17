@@ -150,74 +150,82 @@ jobs:
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
           IMAGE: ${{ env.IMAGE }}
           PORT: ${{ env.APP_PORT }}
-          APP_NAME: "app-teste-2"
+          APP_NAME: ${{ needs.detect-environment.outputs.app_name }}
           ENVIRONMENT: ${{ needs.detect-environment.outputs.environment }}
         run: |
           set -euo pipefail
-          
+
           echo "🚀 Atualizando manifests para ambiente: ${ENVIRONMENT}"
           echo "📁 App: ${APP_NAME}"
           echo "🎯 Imagem: ${IMAGE}"
           echo "🔌 Porta: ${PORT}"
-          
+
           # Sanitiza variáveis
           CLEAN_ENVIRONMENT=$(echo "${ENVIRONMENT}" | tr -d '/' | tr -d '\\')
           CLEAN_APP_NAME=$(echo "${APP_NAME}" | tr -d '/' | tr -d '\\')
-          
+
           # Corrige o path do manifest
           MANIFEST_PATH="k8s/apps/${CLEAN_APP_NAME}/${CLEAN_ENVIRONMENT}"
           DEPLOYMENT_MANIFEST="${MANIFEST_PATH}/deployment.yaml"
           SERVICE_MANIFEST="${MANIFEST_PATH}/service.yaml"
-          
+
           echo "📁 Path correto do manifest: ${MANIFEST_PATH}"
-          
+
           # Configuração git
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
+
           # Clone do repositório fleet
           REPO_NO_PROTO="${FLEET_REPO#https://}"
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
-          
+
           echo "🔍 Clonando repositório fleet..."
           rm -rf fleet-repo
-          
+
           if ! git clone "${CLONE_URL}" fleet-repo; then
             echo "❌ Falha ao clonar repositório"
             exit 1
           fi
-          
+
           cd fleet-repo
-          
+
           # Lista branches para debug
           echo "🌿 Branches disponíveis:"
           git branch -a
-          
-          # Fetch todas as branches
+
           git fetch --all
-          
-          # Checkout da branch do ambiente
+
+          # Define branch de base caso não exista
+          BASE_BRANCH=""
+          for b in main master develop; do
+            if git ls-remote --heads origin "$b" | grep -q "$b"; then
+              BASE_BRANCH="$b"
+              break
+            fi
+          done
+
+          if [ -z "$BASE_BRANCH" ]; then
+            echo "⚠️ Nenhuma branch base encontrada. Criando branch inicial 'main'"
+            git checkout --orphan main
+            git commit --allow-empty -m "Init repo"
+            git push origin main
+            BASE_BRANCH="main"
+          fi
+
+          # Checkout ou criação da branch do ambiente
           if git ls-remote --heads origin "${CLEAN_ENVIRONMENT}" | grep -q "${CLEAN_ENVIRONMENT}"; then
             echo "✅ Branch ${CLEAN_ENVIRONMENT} encontrada"
             git checkout -b "${CLEAN_ENVIRONMENT}" "origin/${CLEAN_ENVIRONMENT}" 2>/dev/null || git checkout "${CLEAN_ENVIRONMENT}"
           else
-            echo "⚠️ Branch ${CLEAN_ENVIRONMENT} não encontrada, criando nova..."
-            if git ls-remote --heads origin main | grep -q main; then
-              git checkout -b "${CLEAN_ENVIRONMENT}" origin/main
-            elif git ls-remote --heads origin master | grep -q master; then
-              git checkout -b "${CLEAN_ENVIRONMENT}" origin/master  
-            elif git ls-remote --heads origin develop | grep -q develop; then
-              git checkout -b "${CLEAN_ENVIRONMENT}" origin/develop
-            else
-              git checkout -b "${CLEAN_ENVIRONMENT}"
-            fi
+            echo "⚠️ Branch ${CLEAN_ENVIRONMENT} não encontrada, criando nova a partir de ${BASE_BRANCH}"
+            git checkout -b "${CLEAN_ENVIRONMENT}" "origin/${BASE_BRANCH}"
           fi
-          
+
           echo "📍 Branch atual: $(git branch --show-current)"
-          
+
           # Cria diretório se não existir
           mkdir -p "${MANIFEST_PATH}"
-          
+
           # Cria ou sobrescreve deployment.yaml
           echo "📝 Criando deployment.yaml..."
           cat > "${DEPLOYMENT_MANIFEST}" << EOF
@@ -258,14 +266,12 @@ jobs:
                 imagePullSecrets:
                   - name: ocir-regcred
           EOF
-            
-          # Cria ou sobrescreve service.yaml
-          echo "📝 Criando service.yaml..."
-          
-          NODE_PORT_HASH=$(echo "${CLEAN_APP_NAME}-${CLEAN_ENVIRONMENT}" | md5sum | cut -c1-4)
-          NODE_PORT=$((30000 + 0x${NODE_PORT_HASH} % 2768))
-          
-          cat > "${SERVICE_MANIFEST}" << EOF
+
+              # Cria ou sobrescreve service.yaml
+              echo "📝 Criando service.yaml..."
+              NODE_PORT_HASH=$(echo "${CLEAN_APP_NAME}-${CLEAN_ENVIRONMENT}" | md5sum | cut -c1-4)
+              NODE_PORT=$((30000 + 0x${NODE_PORT_HASH} % 2768))
+              cat > "${SERVICE_MANIFEST}" << EOF
           apiVersion: v1
           kind: Service
           metadata:
@@ -281,19 +287,19 @@ jobs:
                 protocol: TCP
             type: NodePort
           EOF
-          
-          echo "✅ Manifests criados!"
-          echo "   Deployment: ${DEPLOYMENT_MANIFEST}"
-          echo "   Service: ${SERVICE_MANIFEST}"
-          echo "   NodePort: ${NODE_PORT}"
-          
-          # Verifica se houve mudanças
-          if git diff --quiet --exit-code; then
-            echo "ℹ️ Nenhuma alteração detectada nos manifests"
-          else
-            echo "📝 Commitando alterações..."
-            git add "${MANIFEST_PATH}/"
-            git commit -m "🚀 Deploy ${CLEAN_APP_NAME} para ${CLEAN_ENVIRONMENT}: ${IMAGE}
+
+              echo "✅ Manifests criados!"
+              echo "   Deployment: ${DEPLOYMENT_MANIFEST}"
+              echo "   Service: ${SERVICE_MANIFEST}"
+              echo "   NodePort: ${NODE_PORT}"
+
+              # Commit e push se houver alterações
+              if git diff --quiet --exit-code; then
+                echo "ℹ️ Nenhuma alteração detectada nos manifests"
+              else
+                echo "📝 Commitando alterações..."
+                git add "${MANIFEST_PATH}/"
+                git commit -m "🚀 Deploy ${CLEAN_APP_NAME} para ${CLEAN_ENVIRONMENT}: ${IMAGE}
 
           - Imagem: ${IMAGE}
           - Porta: ${PORT}
@@ -304,7 +310,7 @@ jobs:
                 git push -u origin "${CLEAN_ENVIRONMENT}"
                 echo "✅ Manifests atualizados com sucesso!"
               fi
-              
+
               echo "🎉 Deploy finalizado!"
 
       - name: Create/Update Monday Item
