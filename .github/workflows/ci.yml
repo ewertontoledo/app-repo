@@ -35,17 +35,20 @@ jobs:
               *) ENV="develop" ;;
             esac
           fi
-
-          MANIFEST_PATH="k8s/apps/${{ env.APP_NAME }}/$ENV"
-
           echo "environment=$ENV" >> $GITHUB_OUTPUT
-          echo "manifest_path=$MANIFEST_PATH" >> $GITHUB_OUTPUT
-
+          echo "manifest_path=k8s/apps/\${{ env.APP_NAME }}/$ENV" >> $GITHUB_OUTPUT
           echo "🎯 Branch: ${{ github.ref_name }}"
           echo "🎯 Input environment: ${{ github.event.inputs.environment }}"
           echo "🎯 Ambiente detectado: $ENV"
-          echo "📁 Path do manifest: $MANIFEST_PATH"
-
+          echo "📁 Path do manifest: k8s/apps/\${{ env.APP_NAME }}/$ENV"
+          case "$ENV" in
+            "develop") WORKFLOW_TITLE="🚀 Deploy Development" ;;
+            "stage") WORKFLOW_TITLE="🔄 Deploy Staging" ;;
+            "prod") WORKFLOW_TITLE="🎯 Deploy Production" ;;
+            *) WORKFLOW_TITLE="🔧 Deploy $ENV" ;;
+          esac
+          echo "workflow_title=$WORKFLOW_TITLE" >> $GITHUB_OUTPUT
+          echo "📋 Título do workflow: $WORKFLOW_TITLE"
   build-and-push:
     runs-on: ubuntu-latest
     needs: detect-environment
@@ -54,7 +57,6 @@ jobs:
       APP_PORT: 9000
       TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
       ENVIRONMENT: ${{ needs.detect-environment.outputs.environment }}
-      MANIFEST_PATH: ${{ needs.detect-environment.outputs.manifest_path }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -62,12 +64,10 @@ jobs:
       - name: 🎯 Show Environment Info
         run: |
           echo "=========================================="
-          echo "🎯 DEPLOY PARA: ${{ ENVIRONMENT }}"
+          echo "🎯 DEPLOY PARA: ${{ needs.detect-environment.outputs.environment }}"
           echo "🌐 Branch: ${{ github.ref_name }}"
           echo "📦 Aplicação: ${APP_NAME}"
-          echo "📁 Path do manifest: ${MANIFEST_PATH}"
           echo "=========================================="
-
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
 
@@ -94,7 +94,6 @@ jobs:
             docker build -t "$IMAGE" .
             docker push "$IMAGE"
           fi
-
       - name: Install Trivy
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
@@ -103,7 +102,6 @@ jobs:
           echo "$HOME/bin" >> $GITHUB_PATH
           export PATH="$HOME/bin:$PATH"
           trivy --version
-
       - name: Criar diretório para relatório Trivy
         run: mkdir -p trivy-reports
 
@@ -114,7 +112,6 @@ jobs:
           trivy image --severity HIGH,CRITICAL --exit-code 1 \
             --format json -o trivy-reports/trivy-report-${ENVIRONMENT}.json \
             "${IMAGE}"
-
       - name: Show Trivy JSON summary in log
         if: always()
         run: |
@@ -124,13 +121,12 @@ jobs:
           else
             echo "✅ Relatório não encontrado"
           fi
-
       - name: Upload Trivy report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: trivy-report-${ENVIRONMENT}
-          path: trivy-reports/trivy-report-${ENVIRONMENT}.json
+          name: trivy-report-${{ env.ENVIRONMENT }}
+          path: trivy-reports/trivy-report-${{ env.ENVIRONMENT }}.json
 
       - name: Notify Teams on Trivy failure
         if: failure()
@@ -147,172 +143,111 @@ jobs:
         if: success()
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
+          FLEET_BRANCH: ${{ env.ENVIRONMENT }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
           IMAGE: ${{ env.IMAGE }}
           PORT: ${{ env.APP_PORT }}
-          APP_NAME: ${{ needs.detect-environment.outputs.app_name }}
-          ENVIRONMENT: ${{ needs.detect-environment.outputs.environment }}
+          MANIFEST_PATH: ${{ env.MANIFEST_PATH }}
         run: |
           set -euo pipefail
-
           echo "🚀 Atualizando manifests para ambiente: ${ENVIRONMENT}"
-          echo "📁 App: ${APP_NAME}"
+          echo "📁 Path do manifest: ${MANIFEST_PATH}"
           echo "🎯 Imagem: ${IMAGE}"
-          echo "🔌 Porta: ${PORT}"
-
-          # Sanitiza variáveis
-          CLEAN_ENVIRONMENT=$(echo "${ENVIRONMENT}" | tr -d '/' | tr -d '\\')
-          CLEAN_APP_NAME=$(echo "${APP_NAME}" | tr -d '/' | tr -d '\\')
-
-          # Corrige o path do manifest
-          MANIFEST_PATH="k8s/apps/${CLEAN_APP_NAME}/${CLEAN_ENVIRONMENT}"
-          DEPLOYMENT_MANIFEST="${MANIFEST_PATH}/deployment.yaml"
-          SERVICE_MANIFEST="${MANIFEST_PATH}/service.yaml"
-
-          echo "📁 Path correto do manifest: ${MANIFEST_PATH}"
-
-          # Configuração git
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Clone do repositório fleet
           REPO_NO_PROTO="${FLEET_REPO#https://}"
           CLONE_URL="https://${FLEET_PAT}@${REPO_NO_PROTO}"
-
-          echo "🔍 Clonando repositório fleet..."
-          rm -rf fleet-repo
-
-          if ! git clone "${CLONE_URL}" fleet-repo; then
-            echo "❌ Falha ao clonar repositório"
-            exit 1
-          fi
-
+          BRANCH="${FLEET_BRANCH}"
+          # Clona o repositório
+          git clone --branch "${BRANCH}" "${CLONE_URL}" fleet-repo || {
+            echo "⚠️ Branch ${BRANCH} não encontrada. Criando a partir de develop..."
+            git clone --branch develop "${CLONE_URL}" fleet-repo
+            cd fleet-repo
+            git checkout -b "${BRANCH}"
+            cd ..
+          }
           cd fleet-repo
-
-          # Lista branches para debug
-          echo "🌿 Branches disponíveis:"
-          git branch -a
-
-          git fetch --all
-
-          # Define branch de base caso não exista
-          BASE_BRANCH=""
-          for b in main master develop; do
-            if git ls-remote --heads origin "$b" | grep -q "$b"; then
-              BASE_BRANCH="$b"
-              break
-            fi
-          done
-
-          if [ -z "$BASE_BRANCH" ]; then
-            echo "⚠️ Nenhuma branch base encontrada. Criando branch inicial 'main'"
-            git checkout --orphan main
-            git commit --allow-empty -m "Init repo"
-            git push origin main
-            BASE_BRANCH="main"
-          fi
-
-          # Checkout ou criação da branch do ambiente
-          if git ls-remote --heads origin "${CLEAN_ENVIRONMENT}" | grep -q "${CLEAN_ENVIRONMENT}"; then
-            echo "✅ Branch ${CLEAN_ENVIRONMENT} encontrada"
-            git checkout -b "${CLEAN_ENVIRONMENT}" "origin/${CLEAN_ENVIRONMENT}" 2>/dev/null || git checkout "${CLEAN_ENVIRONMENT}"
-          else
-            echo "⚠️ Branch ${CLEAN_ENVIRONMENT} não encontrada, criando nova a partir de ${BASE_BRANCH}"
-            git checkout -b "${CLEAN_ENVIRONMENT}" "origin/${BASE_BRANCH}"
-          fi
-
-          echo "📍 Branch atual: $(git branch --show-current)"
-
-          # Cria diretório se não existir
-          mkdir -p "${MANIFEST_PATH}"
-
-          # Cria ou sobrescreve deployment.yaml
-          echo "📝 Criando deployment.yaml..."
-          cat > "${DEPLOYMENT_MANIFEST}" << EOF
+          # Puxa commits remotos antes de qualquer alteração
+          git pull --rebase origin "${BRANCH}" || true
+          # Instala yq
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq
+          curl -sSL https://github.com/mikefarah/yq/releases/download/v4.45.1/yq_linux_amd64 -o yq
+          chmod +x yq
+          sudo mv yq /usr/local/bin/
+          DEPLOYMENT_MANIFEST="${MANIFEST_PATH}/deployment.yaml"
+          SERVICE_MANIFEST="${MANIFEST_PATH}/service.yaml"
+          mkdir -p "$(dirname "$DEPLOYMENT_MANIFEST")"
+          # Cria templates se não existirem
+          if [ ! -f "$DEPLOYMENT_MANIFEST" ]; then
+            cat > "$DEPLOYMENT_MANIFEST" << EOF
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: ${CLEAN_APP_NAME}-${CLEAN_ENVIRONMENT}
-            namespace: ${CLEAN_ENVIRONMENT}
+            name: ${APP_NAME}-${ENVIRONMENT}
+            namespace: ${ENVIRONMENT}
             labels:
-              app: ${CLEAN_APP_NAME}
-              env: ${CLEAN_ENVIRONMENT}
-            annotations:
-              fleet.cattle.io/auto-update-image: "true"
+              app: ${APP_NAME}
+              environment: ${ENVIRONMENT}
           spec:
             replicas: 1
             selector:
               matchLabels:
-                app: ${CLEAN_APP_NAME}
-                env: ${CLEAN_ENVIRONMENT}
+                app: ${APP_NAME}
+                environment: ${ENVIRONMENT}
             template:
               metadata:
                 labels:
-                  app: ${CLEAN_APP_NAME}
-                  env: ${CLEAN_ENVIRONMENT}
+                  app: ${APP_NAME}
+                  environment: ${ENVIRONMENT}
               spec:
                 containers:
-                  - name: ${CLEAN_APP_NAME}
-                    image: ${IMAGE}
-                    imagePullPolicy: Always
-                    ports:
-                      - containerPort: ${PORT}
-                    readinessProbe:
-                      httpGet:
-                        path: /
-                        port: ${PORT}
-                      initialDelaySeconds: 5
-                      periodSeconds: 10
-                imagePullSecrets:
-                  - name: ocir-regcred
+                - name: ${APP_NAME}
+                  image: ${IMAGE}
+                  ports:
+                  - containerPort: ${PORT}
+                  env:
+                  - name: ENVIRONMENT
+                    value: ${ENVIRONMENT}
+                  - name: APP_PORT
+                    value: "${PORT}"
           EOF
-
-              # Cria ou sobrescreve service.yaml
-              echo "📝 Criando service.yaml..."
-              NODE_PORT_HASH=$(echo "${CLEAN_APP_NAME}-${CLEAN_ENVIRONMENT}" | md5sum | cut -c1-4)
-              NODE_PORT=$((30000 + 0x${NODE_PORT_HASH} % 2768))
-              cat > "${SERVICE_MANIFEST}" << EOF
+              fi
+              if [ ! -f "$SERVICE_MANIFEST" ]; then
+                cat > "$SERVICE_MANIFEST" << EOF
           apiVersion: v1
           kind: Service
           metadata:
-            name: ${CLEAN_APP_NAME}-svc
-            namespace: ${CLEAN_ENVIRONMENT}
+            name: ${APP_NAME}-${ENVIRONMENT}-service
+            namespace: ${ENVIRONMENT}
+            labels:
+              app: ${APP_NAME}
+              environment: ${ENVIRONMENT}
           spec:
             selector:
-              app: ${CLEAN_APP_NAME}
+              app: ${APP_NAME}
+              environment: ${ENVIRONMENT}
             ports:
-              - port: 80
-                targetPort: ${PORT}
-                nodePort: ${NODE_PORT}
-                protocol: TCP
-            type: NodePort
+            - protocol: TCP
+              port: 80
+              targetPort: ${PORT}
+            type: ClusterIP
           EOF
-
-              echo "✅ Manifests criados!"
-              echo "   Deployment: ${DEPLOYMENT_MANIFEST}"
-              echo "   Service: ${SERVICE_MANIFEST}"
-              echo "   NodePort: ${NODE_PORT}"
-
-              # Commit e push se houver alterações
+              fi
+              # Atualiza manifests
+              yq e -i ".spec.template.spec.containers[0].image = \"${IMAGE}\"" "$DEPLOYMENT_MANIFEST"
+              yq e -i ".spec.template.spec.containers[0].ports[0].containerPort = ${PORT}" "$DEPLOYMENT_MANIFEST"
+              yq e -i ".spec.template.spec.containers[0].env[1].value = \"${PORT}\"" "$DEPLOYMENT_MANIFEST"
+              yq e -i ".spec.ports[0].targetPort = ${PORT}" "$SERVICE_MANIFEST"
+              # Commit e push
               if git diff --quiet --exit-code; then
-                echo "ℹ️ Nenhuma alteração detectada nos manifests"
+                echo "✅ Nenhuma alteração detectada nos manifests"
               else
-                echo "📝 Commitando alterações..."
                 git add "${MANIFEST_PATH}/"
-                git commit -m "🚀 Deploy ${CLEAN_APP_NAME} para ${CLEAN_ENVIRONMENT}: ${IMAGE}
-
-          - Imagem: ${IMAGE}
-          - Porta: ${PORT}
-          - NodePort: ${NODE_PORT}
-          - Timestamp: $(date -u)
-
-          [ci skip]"
-                git push -u origin "${CLEAN_ENVIRONMENT}"
+                git commit -m "Deploy ${APP_NAME} para ${ENVIRONMENT}: ${IMAGE} [ci skip]"
+                git push origin "${BRANCH}"
                 echo "✅ Manifests atualizados com sucesso!"
               fi
-
-              echo "🎉 Deploy finalizado!"
-
       - name: Create/Update Monday Item
         if: success()
         env:
@@ -325,29 +260,23 @@ jobs:
           ITEM_NAME="Deploy ${ENVIRONMENT} - $APP_NAME"
           IMAGE_INFO="Env: ${ENVIRONMENT} | Imagem: $IMAGE"
           echo "🚀 Verificando item: $ITEM_NAME"
-
           QUERY=$(jq -n --arg board_id "$BOARD_ID" \
             '{query: "query { boards(ids: [\($board_id)]) { items_page { items { id name column_values { id text } } } } }"}')
-
           RESPONSE=$(curl -s -X POST https://api.monday.com/v2 \
             -H "Authorization: Bearer $MONDAY_API_TOKEN" \
             -H "Content-Type: application/json" \
             --data-raw "$QUERY")
-
           if echo "$RESPONSE" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
             echo "🚫 Erro da API do Monday. Aborting."
             echo "$RESPONSE" | jq .
             exit 1
           fi
-
           ITEM_ID=$(echo "$RESPONSE" | jq -r --arg name "$ITEM_NAME" \
             '.data.boards[0].items_page.items[]? | select(.name == $name) | .id // empty')
           CURRENT_STATUS=$(echo "$RESPONSE" | jq -r --arg name "$ITEM_NAME" \
             '.data.boards[0].items_page.items[]? | select(.name == $name) | (.column_values? // []) | map(select(.id=="project_status"))[0].text // empty')
-
           echo "ITEM_ID=${ITEM_ID:-<empty>}"
           echo "CURRENT_STATUS=${CURRENT_STATUS:-<empty>}"
-
           if [ -z "$ITEM_ID" ]; then
             echo "➕ Criando item para ambiente ${ENVIRONMENT}..."
             case "$ENVIRONMENT" in
@@ -356,18 +285,15 @@ jobs:
               "prod") INITIAL_STATUS="Aprovado para Prod" ;;
               *) INITIAL_STATUS="Não iniciado" ;;
             esac
-
             COLUMN_VALUES=$(jq -n --arg info "$IMAGE_INFO" --arg status "$INITIAL_STATUS" \
               '{project_status: {label: $status}, text_mkvn9dqm: $info}')
             COLUMN_VALUES_ESCAPED=$(echo "$COLUMN_VALUES" | jq -Rs .)
             PAYLOAD=$(jq -n --arg name "$ITEM_NAME" --arg board_id "$BOARD_ID" --arg colvals "$COLUMN_VALUES_ESCAPED" \
               '{query: "mutation { create_item(board_id: \($board_id|tonumber), item_name: \"\($name)\", column_values: \($colvals)) { id name } }"}')
-
             CREATE_RESP=$(curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: Bearer $MONDAY_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data-raw "$PAYLOAD")
-
             if echo "$CREATE_RESP" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
               echo "🚫 Erro ao criar item no Monday."
               echo "$CREATE_RESP" | jq .
@@ -379,12 +305,10 @@ jobs:
             IMAGE_ESCAPED=$(echo "$IMAGE_INFO" | jq -Rs .)
             UPDATE_PAYLOAD=$(jq -n --arg item_id "$ITEM_ID" --arg board_id "$BOARD_ID" --arg info "$IMAGE_ESCAPED" \
               '{query: "mutation { change_simple_column_value(board_id: \($board_id|tonumber), item_id: \($item_id|tonumber), column_id: \"text_mkvn9dqm\", value: \($info)) { id } }"}')
-
             UPDATE_RESP=$(curl -s -X POST https://api.monday.com/v2 \
               -H "Authorization: Bearer $MONDAY_API_TOKEN" \
               -H "Content-Type: application/json" \
               --data-raw "$UPDATE_PAYLOAD")
-
             if echo "$UPDATE_RESP" | jq -e '.errors? | length > 0' > /dev/null 2>&1; then
               echo "🚫 Erro ao atualizar item no Monday."
               echo "$UPDATE_RESP" | jq .
@@ -392,7 +316,6 @@ jobs:
             fi
             echo "✅ Item atualizado com sucesso para ${ENVIRONMENT}!"
           fi
-
       - name: 🎉 Deploy Summary
         if: always()
         run: |
