@@ -147,14 +147,11 @@ jobs:
         if: success()
         env:
           FLEET_REPO: ${{ secrets.FLEET_REPO_URL }}
-          FLEET_BRANCH: ${{ needs.detect-environment.outputs.environment }}
           FLEET_PAT: ${{ secrets.FLEET_REPO_PAT }}
           IMAGE: ${{ env.IMAGE }}
           PORT: ${{ env.APP_PORT }}
           APP_NAME: "app-teste-2"
           ENVIRONMENT: ${{ needs.detect-environment.outputs.environment }}
-        # Script corrigido baseado no que você está usando
-
         run: |
           set -euo pipefail
           
@@ -185,7 +182,6 @@ jobs:
           echo "🔍 Clonando repositório fleet..."
           rm -rf fleet-repo
           
-          # Clone simples sem especificar branch
           if ! git clone "${CLONE_URL}" fleet-repo; then
             echo "❌ Falha ao clonar repositório"
             exit 1
@@ -200,13 +196,12 @@ jobs:
           # Fetch todas as branches
           git fetch --all
           
-          # Checkout da branch (usa ENVIRONMENT em vez de FLEET_BRANCH)
+          # Checkout da branch do ambiente
           if git ls-remote --heads origin "${CLEAN_ENVIRONMENT}" | grep -q "${CLEAN_ENVIRONMENT}"; then
             echo "✅ Branch ${CLEAN_ENVIRONMENT} encontrada"
             git checkout -b "${CLEAN_ENVIRONMENT}" "origin/${CLEAN_ENVIRONMENT}" 2>/dev/null || git checkout "${CLEAN_ENVIRONMENT}"
           else
             echo "⚠️ Branch ${CLEAN_ENVIRONMENT} não encontrada, criando nova..."
-            # Tenta criar a partir de main, master ou develop
             if git ls-remote --heads origin main | grep -q main; then
               git checkout -b "${CLEAN_ENVIRONMENT}" origin/main
             elif git ls-remote --heads origin master | grep -q master; then
@@ -226,87 +221,86 @@ jobs:
           # Cria ou sobrescreve deployment.yaml
           echo "📝 Criando deployment.yaml..."
           cat > "${DEPLOYMENT_MANIFEST}" << EOF
-            apiVersion: apps/v1
-            kind: Deployment
-            metadata:
-              name: ${CLEAN_APP_NAME}-${CLEAN_ENVIRONMENT}
-              namespace: ${CLEAN_ENVIRONMENT}
-              labels:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${CLEAN_APP_NAME}-${CLEAN_ENVIRONMENT}
+            namespace: ${CLEAN_ENVIRONMENT}
+            labels:
+              app: ${CLEAN_APP_NAME}
+              env: ${CLEAN_ENVIRONMENT}
+            annotations:
+              fleet.cattle.io/auto-update-image: "true"
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
                 app: ${CLEAN_APP_NAME}
                 env: ${CLEAN_ENVIRONMENT}
-              annotations:
-                fleet.cattle.io/auto-update-image: "true"
-            spec:
-              replicas: 1
-              selector:
-                matchLabels:
+            template:
+              metadata:
+                labels:
                   app: ${CLEAN_APP_NAME}
                   env: ${CLEAN_ENVIRONMENT}
-              template:
-                metadata:
-                  labels:
-                    app: ${CLEAN_APP_NAME}
-                    env: ${CLEAN_ENVIRONMENT}
-                spec:
-                  containers:
-                    - name: ${CLEAN_APP_NAME}
-                      image: ${IMAGE}
-                      imagePullPolicy: Always
-                      ports:
-                        - containerPort: ${PORT}
-                      readinessProbe:
-                        httpGet:
-                          path: /
-                          port: ${PORT}
-                        initialDelaySeconds: 5
-                        periodSeconds: 10
-                  imagePullSecrets:
-                    - name: ocir-regcred
-            EOF
-              
-              # Cria ou sobrescreve service.yaml
-              echo "📝 Criando service.yaml..."
-              
-              # Gera nodePort consistente
-              NODE_PORT_HASH=$(echo "${CLEAN_APP_NAME}-${CLEAN_ENVIRONMENT}" | md5sum | cut -c1-4)
-              NODE_PORT=$((30000 + 0x${NODE_PORT_HASH} % 2768))
-              
-              cat > "${SERVICE_MANIFEST}" << EOF
-            apiVersion: v1
-            kind: Service
-            metadata:
-              name: ${CLEAN_APP_NAME}-svc
-              namespace: ${CLEAN_ENVIRONMENT}
-            spec:
-              selector:
-                app: ${CLEAN_APP_NAME}
-              ports:
-                - port: 80
-                  targetPort: ${PORT}
-                  nodePort: ${NODE_PORT}
-                  protocol: TCP
-              type: NodePort
-            EOF
-              
-              echo "✅ Manifests criados!"
-              echo "   Deployment: ${DEPLOYMENT_MANIFEST}"
-              echo "   Service: ${SERVICE_MANIFEST}"
-              echo "   NodePort: ${NODE_PORT}"
-              
-              # Verifica se houve mudanças
-              if git diff --quiet --exit-code; then
-                echo "ℹ️ Nenhuma alteração detectada nos manifests"
-              else
-                echo "📝 Commitando alterações..."
-                git add "${MANIFEST_PATH}/"
-                git commit -m "🚀 Deploy ${CLEAN_APP_NAME} para ${CLEAN_ENVIRONMENT}: ${IMAGE}
+              spec:
+                containers:
+                  - name: ${CLEAN_APP_NAME}
+                    image: ${IMAGE}
+                    imagePullPolicy: Always
+                    ports:
+                      - containerPort: ${PORT}
+                    readinessProbe:
+                      httpGet:
+                        path: /
+                        port: ${PORT}
+                      initialDelaySeconds: 5
+                      periodSeconds: 10
+                imagePullSecrets:
+                  - name: ocir-regcred
+          EOF
+            
+          # Cria ou sobrescreve service.yaml
+          echo "📝 Criando service.yaml..."
+          
+          NODE_PORT_HASH=$(echo "${CLEAN_APP_NAME}-${CLEAN_ENVIRONMENT}" | md5sum | cut -c1-4)
+          NODE_PORT=$((30000 + 0x${NODE_PORT_HASH} % 2768))
+          
+          cat > "${SERVICE_MANIFEST}" << EOF
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${CLEAN_APP_NAME}-svc
+            namespace: ${CLEAN_ENVIRONMENT}
+          spec:
+            selector:
+              app: ${CLEAN_APP_NAME}
+            ports:
+              - port: 80
+                targetPort: ${PORT}
+                nodePort: ${NODE_PORT}
+                protocol: TCP
+            type: NodePort
+          EOF
+          
+          echo "✅ Manifests criados!"
+          echo "   Deployment: ${DEPLOYMENT_MANIFEST}"
+          echo "   Service: ${SERVICE_MANIFEST}"
+          echo "   NodePort: ${NODE_PORT}"
+          
+          # Verifica se houve mudanças
+          if git diff --quiet --exit-code; then
+            echo "ℹ️ Nenhuma alteração detectada nos manifests"
+          else
+            echo "📝 Commitando alterações..."
+            git add "${MANIFEST_PATH}/"
+            git commit -m "🚀 Deploy ${CLEAN_APP_NAME} para ${CLEAN_ENVIRONMENT}: ${IMAGE}
 
-            - Imagem: ${IMAGE}
-            - Porta: ${PORT}
-            - NodePort: ${NODE_PORT}
-            - Timestamp: $(date -u)
+          - Imagem: ${IMAGE}
+          - Porta: ${PORT}
+          - NodePort: ${NODE_PORT}
+          - Timestamp: $(date -u)
 
-            [ci skip]"
+          [ci skip]"
                 git push -u origin "${CLEAN_ENVIRONMENT}"
                 echo "✅ Manifests atualizados com sucesso!"
               fi
